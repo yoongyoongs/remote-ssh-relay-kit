@@ -1,60 +1,52 @@
-# 远程 SSH 中继工具包
+# Remote SSH Relay Kit
 
-这是一个面向 Windows 和 macOS 目标机器的远程 SSH 接入工具包，适用于目标机器没有公网 IP、处于 NAT 或家用路由器后的场景。
+这是一个给 Windows 和 macOS 目标机使用的远程 SSH 中继工具包。
 
-它的核心思路是：
+它的目标很直接：
 
-1. 你先准备一台带公网 IP 的 Linux 中转服务器。
-2. 目标机器主动向中转服务器建立反向 SSH 隧道。
-3. 目标机器把最终可连接的 SSH 命令显示出来。
-4. 你在自己的电脑上用私钥连入目标机器。
+1. 你准备一台有公网 IP 的 Linux 中转服务器。
+2. 对方只要双击一个 `bat` 或 `command/sh` 文件，就能在本机拉起 SSH 服务、注册到中继服务器、建立反向隧道。
+3. 程序会把最终连接命令用中文显示出来，对方复制给你，你就能从自己的电脑发起 SSH 连接。
+
+## 当前版本重点
+
+这一版重点补强了 Windows 端的一键启动体验：
+
+1. 如果目标机没有安装 `OpenSSH Server`，会自动安装。
+2. 安装支持两种方式：
+   - 后台静默安装
+   - 另开一个 `cmd` 窗口安装
+3. 主程序会持续显示中文流程、步骤状态和安装日志。
+4. 中继服务端改成了兼容旧版 Node.js 的 CommonJS 版本。
+5. 服务端新增了坏 JSON 请求的错误兜底，避免异常请求直接把接口打成 500。
 
 ## 目录说明
 
-- `server/`：中转服务器程序与部署脚本
+- `server/`：Linux 中转服务、`sshd` 配置样例、安装脚本
 - `windows/`：Windows 一键启动程序
 - `mac/`：macOS 一键启动程序
-- `scripts/`：配置注入、打包、自动部署脚本
-- `docs/`：中文文档
-
-## 这次重新设计后的重点
-
-这版重点强化了 Windows 端的启动体验：
-
-1. 如果目标电脑没有安装 `OpenSSH Server`，程序会自动安装。
-2. 用户点击一键启动后，会先看到一个主控窗口。
-3. 主控窗口会显示当前流程、结果状态、以及详细日志。
-4. 安装 `OpenSSH Server` 时支持两种模式：
-   - 后台安装
-   - 弹出单独 `cmd` 安装窗口
-5. 无论选择哪种安装模式，主控窗口都会持续显示安装信息。
-
-## Windows 端当前结构
-
-Windows 端由三部分组成：
-
-- `start-remote-ssh.bat`：一键启动入口
-- `RemoteSshApp.ps1`：前台主控窗口，负责显示流程与日志
-- `RemoteSshWorker.ps1`：提权后的后台执行器
-- `InstallOpenSsh.ps1`：仅在缺少 OpenSSH 时调用的独立安装器
-
-## 核心配置项
-
-Windows `config.ini` 新增了与安装行为相关的配置：
-
-- `SHOW_WORKER_WINDOW=false`
-  - 是否显示后台执行器窗口
-- `INSTALL_OPENSSH_MODE=hidden`
-  - `hidden`：后台安装 OpenSSH
-  - `cmd`：弹出单独 `cmd` 窗口安装 OpenSSH
-  - `window`：兼容旧配置，等同于 `cmd`
-- `FORCE_INSTALL_OPENSSH_IN_DRY_RUN=false`
-  - 仅用于演练测试，强制模拟“系统未安装 OpenSSH”的路径
+- `scripts/`：自动部署和打包脚本
+- `docs/`：中文设计、部署、使用、测试、交接文档
 
 ## 文档导航
 
-- `docs/01-总体设计文档.md`
-- `docs/02-Linux部署文档.md`
-- `docs/03-Windows使用文档.md`
-- `docs/04-macOS使用文档.md`
-- `docs/05-工作状态文档.md`
+- [总体设计文档](docs/01-总体设计文档.md)
+- [Linux 部署文档](docs/02-Linux部署文档.md)
+- [Windows 使用文档](docs/03-Windows使用文档.md)
+- [macOS 使用文档](docs/04-macOS使用文档.md)
+- [工作状态文档](docs/05-工作状态文档.md)
+- [交接文档](docs/06-交接文档.md)
+
+## 2026-06-13 当前状态
+
+截至 2026-06-13：
+
+1. 服务器内网健康检查已通过：`127.0.0.1:8787/health` 返回正常。
+2. 服务器 systemd 服务已正常运行：`remote-ssh-relay.service active (running)`。
+3. Windows 干跑、强制安装演练、中文界面和安装日志显示已完成验证。
+4. 服务器公网 `106.13.171.166:8787` 从外部访问仍然超时，当前更像云安全组或云防火墙没有放行 8787，而不是本地 Clash TUN 问题。
+
+详细测试记录、问题定位和后续动作见：
+
+- [工作状态文档](docs/05-工作状态文档.md)
+- [交接文档](docs/06-交接文档.md)

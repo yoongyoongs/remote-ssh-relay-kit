@@ -40,6 +40,10 @@ function Test-IsAdministrator {
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
+function Use-LiveRelayInDryRun {
+    return ($script:DryRun -and ((Get-ConfigValue -Config $script:Config -Key "DRY_RUN_USE_LIVE_RELAY" -DefaultValue "false").ToLowerInvariant() -eq "true"))
+}
+
 function Write-Log {
     param([string]$Message)
     $line = "[{0}] {1}" -f (Get-Date -Format "s"), $Message
@@ -206,11 +210,22 @@ function Ensure-ServiceInstalled {
 
 function Ensure-SshdRunning {
     Invoke-Step -Id "start_sshd" -Message "Starting sshd service." -Action {
-        if ($script:DryRun) {
+        if ($script:DryRun -and -not (Use-LiveRelayInDryRun)) {
             Start-Sleep -Milliseconds 500
         } else {
-            Start-Service sshd
-            Set-Service -Name sshd -StartupType Automatic
+            $service = Get-Service -Name sshd -ErrorAction SilentlyContinue
+            if ($null -eq $service) {
+                throw "sshd service is not installed."
+            }
+            if ($service.Status -ne "Running") {
+                if (Use-LiveRelayInDryRun) {
+                    throw "sshd service is not running, and live dry-run mode will not start services without administrator rights."
+                }
+                Start-Service sshd
+            }
+            if (-not (Use-LiveRelayInDryRun)) {
+                Set-Service -Name sshd -StartupType Automatic
+            }
         }
         Set-StepState -Id "start_sshd" -State "success" -Message "sshd service is running."
     }
@@ -242,7 +257,7 @@ function Ensure-FirewallRule {
 
 function Verify-LocalSsh {
     Invoke-Step -Id "verify_local_ssh" -Message "Verifying local SSH listener." -Action {
-        if ($script:DryRun) {
+        if ($script:DryRun -and -not (Use-LiveRelayInDryRun)) {
             Start-Sleep -Milliseconds 300
             Set-StepState -Id "verify_local_ssh" -State "success" -Message "Local SSH verification simulated."
             return
@@ -342,6 +357,13 @@ function Enroll-Device {
                     local_port = 22
                 }
             }
+            if (Use-LiveRelayInDryRun) {
+                $response = Invoke-RestMethod `
+                    -Method Post `
+                    -Uri $Config["ENROLL_API"] `
+                    -ContentType "application/json" `
+                    -Body ($body | ConvertTo-Json)
+            }
         } else {
             $response = Invoke-RestMethod `
                 -Method Post `
@@ -363,7 +385,7 @@ function Start-ReverseTunnel {
     )
     $pidPath = Join-Path $script:RuntimeRoot "tunnel.pid"
     Invoke-Step -Id "start_reverse_tunnel" -Message "Starting reverse SSH tunnel." -Action {
-        if ($script:DryRun) {
+        if ($script:DryRun -and -not (Use-LiveRelayInDryRun)) {
             Set-Content -LiteralPath $pidPath -Value "99999" -Encoding ascii
             Set-StepState -Id "start_reverse_tunnel" -State "success" -Message "Dry-run tunnel simulated."
             return
@@ -392,7 +414,7 @@ function Start-ReverseTunnel {
 
 function Verify-Tunnel {
     Invoke-Step -Id "verify_tunnel" -Message "Verifying tunnel state." -Action {
-        if ($script:DryRun) {
+        if ($script:DryRun -and -not (Use-LiveRelayInDryRun)) {
             Start-Sleep -Milliseconds 200
             Set-StepState -Id "verify_tunnel" -State "success" -Message "Dry-run tunnel verification succeeded."
             return

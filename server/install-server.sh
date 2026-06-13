@@ -32,7 +32,7 @@ sudo chmod 600 "/home/${TUNNEL_USER}/.ssh/authorized_keys"
 
 echo "[4/7] Copy relay server files"
 sudo mkdir -p "${APP_DIR}/server"
-sudo cp "${SCRIPT_DIR}/relay-server.mjs" "${APP_DIR}/server/relay-server.mjs"
+sudo cp "${SCRIPT_DIR}/relay-server.js" "${APP_DIR}/server/relay-server.js"
 if [ -f "${SCRIPT_DIR}/relay.env.sample" ]; then
   sudo cp "${SCRIPT_DIR}/relay.env.sample" "${APP_DIR}/relay.env.sample"
 fi
@@ -64,7 +64,7 @@ After=network.target
 Type=simple
 WorkingDirectory=${APP_DIR}/server
 EnvironmentFile=${APP_DIR}/relay.env
-ExecStart=/usr/bin/node ${APP_DIR}/server/relay-server.mjs
+ExecStart=/usr/bin/node ${APP_DIR}/server/relay-server.js
 Restart=always
 RestartSec=3
 

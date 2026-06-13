@@ -2,12 +2,11 @@
   "name": "remote-ssh-relay-kit",
   "version": "0.1.0",
   "private": true,
-  "type": "module",
   "dependencies": {
     "ssh2": "^1.16.0"
   },
   "scripts": {
-    "serve": "node ./server/relay-server.mjs",
+    "serve": "node ./server/relay-server.js",
     "deploy:relay": "node ./scripts/deploy-relay.mjs"
   }
 }

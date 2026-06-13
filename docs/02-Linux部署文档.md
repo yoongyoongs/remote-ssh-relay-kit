@@ -1,92 +1,89 @@
 # Linux 部署文档
 
-## 1. 部署目标
+本文档用于部署中转服务器。
 
-本项目的 Linux 部署对象，是一台带公网 IP 的中转服务器。它需要完成两件事：
+当前联调服务器信息：
 
-1. 提供设备注册接口
-2. 承接目标机器发起的反向 SSH 隧道
+- 公网 IP：`106.13.171.166`
+- 管理账号：`root`
+- 中继登录用户：`tunnel`
+- API 服务名：`remote-ssh-relay`
+- API 端口：`8787`
 
-## 2. 环境要求
+## 1. 服务器职责
 
-建议环境：
+这台 Linux 服务器负责两件事：
 
-- Ubuntu 22.04 及以上，或其他常见 Debian 系 Linux
-- 已开放公网入站端口：
-  - `22`：SSH
-  - `8787`：注册 API
-  - `24000-24999`：目标机器反向映射端口范围
+1. 提供注册接口，给 Windows 或 macOS 目标机分配远程端口。
+2. 作为 SSH 反向隧道的落点，让你从自己的电脑再 SSH 进目标机。
 
-## 3. 服务器目录说明
+## 2. 部署目录
 
-默认安装目录：
+部署完成后，服务器上会出现这些路径：
 
-```text
-/opt/remote-ssh-relay
-```
+- 程序目录：`/opt/remote-ssh-relay`
+- 主程序：`/opt/remote-ssh-relay/server/relay-server.js`
+- 环境文件：`/opt/remote-ssh-relay/relay.env`
+- 状态文件：`/opt/remote-ssh-relay/state/devices.json`
+- 服务文件：`/etc/systemd/system/remote-ssh-relay.service`
+- 中继用户公钥表：`/home/tunnel/.ssh/authorized_keys`
 
-主要文件：
+## 3. 必备开放项
 
-- `/opt/remote-ssh-relay/server/relay-server.mjs`
-- `/opt/remote-ssh-relay/relay.env`
-- `/opt/remote-ssh-relay/state/devices.json`
-- `/home/tunnel/.ssh/authorized_keys`
+这一步非常重要。
 
-## 4. 自动部署方式
+除了 SSH 的 `22` 端口，还必须在云服务器控制台放行 `8787/TCP`，否则：
 
-本仓库提供自动部署脚本：
+1. 目标机无法调用 `/api/enroll`
+2. 你的本机也无法访问健康检查接口
+3. Windows 一键启动会在“注册到中继服务器”这一步失败
 
-```powershell
-cd D:\code\remote-ssh-relay-kit
-npm install
-node .\scripts\deploy-relay.mjs `
-  --host 106.13.171.166 `
-  --user root `
-  --password 你的服务器密码 `
-  --enroll-code 你的注册码
-```
+建议至少放行：
 
-脚本会做这些事情：
+- `22/TCP`
+- `8787/TCP`
+- 远程端口区间，例如 `24000-24999/TCP`
 
-1. 上传服务端文件到服务器
-2. 安装或检查 Node.js
-3. 创建 `tunnel` 账号
-4. 生成服务目录
-5. 安装 systemd 服务
-6. 写入 `relay.env`
-7. 合并 `sshd_config` 规则
-8. 启动中转注册服务
-9. 访问本机 `health` 接口做校验
+其中：
 
-## 5. 手动部署方式
+- `8787` 给启动器注册用
+- `24000-24999` 给每台目标机的反向 SSH 映射端口用
 
-如果你想手工部署，可以按这个流程来：
+## 4. 一键部署方式
 
-### 5.1 上传服务端文件
-
-把下面几个文件传到服务器：
-
-- `server/relay-server.mjs`
-- `server/install-server.sh`
-- `server/relay.env.sample`
-- `server/sshd_config.sample`
-
-### 5.2 执行安装脚本
+本项目已经提供自动部署脚本：
 
 ```bash
-chmod +x install-server.sh
-./install-server.sh
+node ./scripts/deploy-relay.mjs \
+  --host 106.13.171.166 \
+  --user root \
+  --password '你的 root 密码' \
+  --relay-host 106.13.171.166 \
+  --relay-user tunnel \
+  --api-port 8787 \
+  --relay-ssh-port 22 \
+  --enroll-code RLY-20260613-7R4KX9 \
+  --port-start 24000 \
+  --port-end 24999
 ```
 
-### 5.3 编辑环境变量文件
+## 5. 手工部署方式
 
-编辑：
+如果你要手工部署，顺序如下：
 
-```bash
-/opt/remote-ssh-relay/relay.env
-```
+1. 上传 `server/relay-server.js`
+2. 上传 `server/install-server.sh`
+3. 上传 `server/sshd_config.sample`
+4. 上传 `server/relay.env.sample`
+5. 执行安装脚本
+6. 写入正式 `relay.env`
+7. 追加 `sshd_config.sample` 中的限制配置
+8. 重启 `ssh/sshd`
+9. 启动 `remote-ssh-relay.service`
 
-示例：
+## 6. 当前服务配置重点
+
+`relay.env` 里至少要确认这些值：
 
 ```ini
 API_BIND=0.0.0.0
@@ -94,7 +91,7 @@ API_PORT=8787
 RELAY_HOST=106.13.171.166
 RELAY_SSH_PORT=22
 RELAY_USER=tunnel
-ENROLL_CODES=CHANGE-ME
+ENROLL_CODES=RLY-20260613-7R4KX9
 PORT_RANGE_START=24000
 PORT_RANGE_END=24999
 STATE_PATH=/opt/remote-ssh-relay/state/devices.json
@@ -102,62 +99,63 @@ AUTH_KEYS_PATH=/home/tunnel/.ssh/authorized_keys
 LEASE_HOURS=24
 ```
 
-## 6. SSH 配置
+## 7. 当前已验证结果
 
-把 `server/sshd_config.sample` 中的内容合并到：
+在 2026-06-13 已确认：
 
-```bash
-/etc/ssh/sshd_config
-```
-
-然后重启 SSH：
-
-```bash
-systemctl restart ssh || systemctl restart sshd
-```
-
-## 7. systemd 服务
-
-安装脚本会创建：
-
-```text
-/etc/systemd/system/remote-ssh-relay.service
-```
-
-启动命令：
-
-```bash
-systemctl enable --now remote-ssh-relay
-systemctl status remote-ssh-relay
-```
-
-## 8. 健康检查
-
-服务正常后，执行：
-
-```bash
-curl http://127.0.0.1:8787/health
-```
-
-正常返回：
+1. `remote-ssh-relay.service` 正常运行。
+2. `ss -lntp | grep 8787` 显示服务监听 `0.0.0.0:8787`。
+3. `curl http://127.0.0.1:8787/health` 返回：
 
 ```json
 {"ok":true,"service":"remote-ssh-relay"}
 ```
 
-## 9. 防火墙与安全组
+## 8. 当前未完成项
 
-除了系统本机配置，还需要在云厂商安全组里放行：
+截至 2026-06-13，公网访问还存在一个外部问题：
 
-- `22/tcp`
-- `8787/tcp`
-- `24000-24999/tcp`
+1. `curl http://106.13.171.166:8787/health` 在服务器自身会超时
+2. 你的 Windows 本机访问同一地址也会超时
+3. 这更像是云安全组或云防火墙未放开 `8787/TCP`
 
-如果安全组没有放行，客户端就算注册成功，也可能无法建立反向隧道，或者你无法从外部连接到映射端口。
+也就是说，应用本身已经起来了，但公网入口还没完全放通。
 
-## 10. 上线建议
+## 9. 排障命令
 
-1. 注册码按批次轮换，不要长期固定。
-2. 建议单独为该服务器准备用途明确的机器，不和其他高敏感服务混用。
-3. 推荐定期备份 `/opt/remote-ssh-relay/state/devices.json`。
-4. 建议后续增加 HTTPS、审计日志和断线回收机制。
+查看服务状态：
+
+```bash
+systemctl --no-pager --full status remote-ssh-relay
+```
+
+查看监听端口：
+
+```bash
+ss -lntp | grep 8787
+```
+
+查看本机健康检查：
+
+```bash
+curl -i http://127.0.0.1:8787/health
+```
+
+查看公网健康检查：
+
+```bash
+curl -i http://106.13.171.166:8787/health
+```
+
+查看 SSH 是否监听：
+
+```bash
+ss -lntp | grep :22
+```
+
+## 10. 建议的下一步
+
+1. 在云服务器控制台明确放行 `8787/TCP`
+2. 放行 `24000-24999/TCP`
+3. 再从 Windows 本机重新验证 `/health`
+4. 通过 Windows 一键启动完成一次真实注册和反向 SSH 建链

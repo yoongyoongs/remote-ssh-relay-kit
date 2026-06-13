@@ -104,7 +104,7 @@ async function main() {
   const portEnd = Number(args["port-end"] || 24999);
 
   const localFiles = [
-    path.join(serverDir, "relay-server.mjs"),
+    path.join(serverDir, "relay-server.js"),
     path.join(serverDir, "install-server.sh"),
     path.join(serverDir, "sshd_config.sample"),
     path.join(serverDir, "relay.env.sample"),

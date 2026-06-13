@@ -1,10 +1,6 @@
-import http from "node:http";
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const http = require("http");
+const fs = require("fs");
+const path = require("path");
 
 const CONFIG = {
   bind: process.env.API_BIND || "0.0.0.0",
@@ -15,7 +11,7 @@ const CONFIG = {
   enrollCodes: new Set(
     (process.env.ENROLL_CODES || "CHANGE-ME")
       .split(",")
-      .map((value) => value.trim())
+      .map(function (value) { return value.trim(); })
       .filter(Boolean),
   ),
   portStart: Number(process.env.PORT_RANGE_START || 24000),
@@ -50,9 +46,12 @@ function saveState(state) {
 
 function allocatePort(devices) {
   const used = new Set(
-    devices.filter((device) => device.status === "active").map((device) => device.relayPort),
+    devices
+      .filter(function (device) { return device.status === "active"; })
+      .map(function (device) { return device.relayPort; }),
   );
-  for (let port = CONFIG.portStart; port <= CONFIG.portEnd; port += 1) {
+  let port = CONFIG.portStart;
+  for (; port <= CONFIG.portEnd; port += 1) {
     if (!used.has(port)) {
       return port;
     }
@@ -66,21 +65,21 @@ function rebuildAuthorizedKeys(devices) {
   }
 
   const active = devices
-    .filter((device) => device.status === "active")
-    .sort((left, right) => left.deviceId.localeCompare(right.deviceId));
+    .filter(function (device) { return device.status === "active"; })
+    .sort(function (left, right) { return left.deviceId.localeCompare(right.deviceId); });
 
   const lines = [
     "# Managed by remote-ssh-relay-kit",
     "# Do not edit manually.",
   ];
 
-  for (const device of active) {
-    const options = `restrict,port-forwarding,permitlisten="0.0.0.0:${device.relayPort}"`;
-    lines.push(`${options} ${device.devicePublicKey} ${device.deviceId}`);
-  }
+  active.forEach(function (device) {
+    const options = 'restrict,port-forwarding,permitlisten="0.0.0.0:' + device.relayPort + '"';
+    lines.push(options + " " + device.devicePublicKey + " " + device.deviceId);
+  });
 
   fs.mkdirSync(path.dirname(CONFIG.authKeysPath), { recursive: true });
-  fs.writeFileSync(CONFIG.authKeysPath, `${lines.join("\n")}\n`);
+  fs.writeFileSync(CONFIG.authKeysPath, lines.join("\n") + "\n");
 }
 
 function sendJson(response, statusCode, payload) {
@@ -93,14 +92,15 @@ function sendJson(response, statusCode, payload) {
 }
 
 function readJsonBody(request) {
-  return new Promise((resolve, reject) => {
+  return new Promise(function (resolve, reject) {
     const chunks = [];
-    request.on("data", (chunk) => chunks.push(chunk));
-    request.on("end", () => {
+    request.on("data", function (chunk) { chunks.push(chunk); });
+    request.on("end", function () {
       try {
         const raw = Buffer.concat(chunks).toString("utf8");
         resolve(raw ? JSON.parse(raw) : {});
       } catch (error) {
+        error.code = "INVALID_JSON";
         reject(error);
       }
     });
@@ -109,21 +109,21 @@ function readJsonBody(request) {
 }
 
 function makeDeviceRecord(body, existing, devices) {
-  const relayPort = existing?.relayPort ?? allocatePort(devices);
-  const createdAt = existing?.createdAt ?? nowIso();
+  const relayPort = existing && existing.relayPort ? existing.relayPort : allocatePort(devices);
+  const createdAt = existing && existing.createdAt ? existing.createdAt : nowIso();
   const expiresAt = new Date(Date.now() + CONFIG.leaseHours * 60 * 60 * 1000).toISOString();
   return {
-    deviceRecordId: existing?.deviceRecordId ?? `dev_${body.device_id}`,
+    deviceRecordId: existing && existing.deviceRecordId ? existing.deviceRecordId : "dev_" + body.device_id,
     deviceId: body.device_id,
     deviceName: body.device_name || body.device_id,
     osType: body.os_type,
     localUser: body.local_user,
     devicePublicKey: body.device_public_key.trim(),
-    relayPort,
+    relayPort: relayPort,
     status: "active",
-    createdAt,
+    createdAt: createdAt,
     lastSeenAt: nowIso(),
-    expiresAt,
+    expiresAt: expiresAt,
   };
 }
 
@@ -154,10 +154,10 @@ async function handleEnroll(request, response) {
   }
 
   const state = loadState();
-  const existing = state.devices.find((device) => device.deviceId === body.device_id);
+  const existing = state.devices.find(function (device) { return device.deviceId === body.device_id; });
   const record = makeDeviceRecord(body, existing, state.devices);
 
-  state.devices = state.devices.filter((device) => device.deviceId !== body.device_id);
+  state.devices = state.devices.filter(function (device) { return device.deviceId !== body.device_id; });
   state.devices.push(record);
   saveState(state);
   rebuildAuthorizedKeys(state.devices);
@@ -174,7 +174,7 @@ async function handleEnroll(request, response) {
       local_host: "127.0.0.1",
       local_port: 22,
     },
-    connect_command: `ssh -p ${record.relayPort} ${record.localUser}@${CONFIG.relayHost}`,
+    connect_command: "ssh -p " + record.relayPort + " " + record.localUser + "@" + CONFIG.relayHost,
   });
 }
 
@@ -185,16 +185,15 @@ async function handleHeartbeat(request, response) {
   }
 
   const state = loadState();
-  const index = state.devices.findIndex((device) => device.deviceRecordId === body.device_record_id);
+  const index = state.devices.findIndex(function (device) { return device.deviceRecordId === body.device_record_id; });
   if (index === -1) {
     return sendJson(response, 404, { ok: false, errorCode: "NOT_FOUND" });
   }
 
-  state.devices[index] = {
-    ...state.devices[index],
+  state.devices[index] = Object.assign({}, state.devices[index], {
     lastSeenAt: nowIso(),
     status: "active",
-  };
+  });
   saveState(state);
   return sendJson(response, 200, { ok: true });
 }
@@ -206,22 +205,21 @@ async function handleRevoke(request, response) {
   }
 
   const state = loadState();
-  const index = state.devices.findIndex((device) => device.deviceRecordId === body.device_record_id);
+  const index = state.devices.findIndex(function (device) { return device.deviceRecordId === body.device_record_id; });
   if (index === -1) {
     return sendJson(response, 404, { ok: false, errorCode: "NOT_FOUND" });
   }
 
-  state.devices[index] = {
-    ...state.devices[index],
+  state.devices[index] = Object.assign({}, state.devices[index], {
     status: "revoked",
     lastSeenAt: nowIso(),
-  };
+  });
   saveState(state);
   rebuildAuthorizedKeys(state.devices);
   return sendJson(response, 200, { ok: true });
 }
 
-const server = http.createServer(async (request, response) => {
+const server = http.createServer(async function (request, response) {
   try {
     if (request.method === "GET" && request.url === "/health") {
       return sendJson(response, 200, { ok: true, service: "remote-ssh-relay" });
@@ -238,6 +236,15 @@ const server = http.createServer(async (request, response) => {
 
     return sendJson(response, 404, { ok: false, errorCode: "NOT_FOUND" });
   } catch (error) {
+    if (error && error.code === "INVALID_JSON") {
+      return sendJson(response, 400, {
+        ok: false,
+        errorCode: "INVALID_JSON",
+        message: "Request body is not valid JSON.",
+      });
+    }
+
+    console.error("[relay-server]", error && error.stack ? error.stack : error);
     return sendJson(response, 500, {
       ok: false,
       errorCode: "INTERNAL_ERROR",
@@ -246,6 +253,6 @@ const server = http.createServer(async (request, response) => {
   }
 });
 
-server.listen(CONFIG.port, CONFIG.bind, () => {
-  console.log(`Remote SSH relay listening on http://${CONFIG.bind}:${CONFIG.port}`);
+server.listen(CONFIG.port, CONFIG.bind, function () {
+  console.log("Remote SSH relay listening on http://" + CONFIG.bind + ":" + CONFIG.port);
 });
