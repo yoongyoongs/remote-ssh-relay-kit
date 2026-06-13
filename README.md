@@ -26,7 +26,7 @@
 3. 主控窗口会显示当前流程、结果状态、以及详细日志。
 4. 安装 `OpenSSH Server` 时支持两种模式：
    - 后台安装
-   - 弹出单独安装窗口
+   - 弹出单独 `cmd` 安装窗口
 5. 无论选择哪种安装模式，主控窗口都会持续显示安装信息。
 
 ## Windows 端当前结构
@@ -46,7 +46,8 @@ Windows `config.ini` 新增了与安装行为相关的配置：
   - 是否显示后台执行器窗口
 - `INSTALL_OPENSSH_MODE=hidden`
   - `hidden`：后台安装 OpenSSH
-  - `window`：弹出单独 PowerShell 窗口安装 OpenSSH
+  - `cmd`：弹出单独 `cmd` 窗口安装 OpenSSH
+  - `window`：兼容旧配置，等同于 `cmd`
 - `FORCE_INSTALL_OPENSSH_IN_DRY_RUN=false`
   - 仅用于演练测试，强制模拟“系统未安装 OpenSSH”的路径
 

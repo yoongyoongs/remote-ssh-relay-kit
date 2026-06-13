@@ -105,6 +105,13 @@ function Invoke-Step {
 
 function Ensure-ServiceInstalled {
     $forceInstallInDryRun = ((Get-ConfigValue -Config $script:Config -Key "FORCE_INSTALL_OPENSSH_IN_DRY_RUN" -DefaultValue "false").ToLowerInvariant() -eq "true")
+    $mode = (Get-ConfigValue -Config $script:Config -Key "INSTALL_OPENSSH_MODE" -DefaultValue "hidden").ToLowerInvariant()
+    if ($mode -eq "window") {
+        $mode = "cmd"
+    }
+    if ($mode -notin @("hidden", "cmd")) {
+        $mode = "hidden"
+    }
     $service = Get-Service -Name sshd -ErrorAction SilentlyContinue
     if ($null -ne $service -and -not ($script:DryRun -and $forceInstallInDryRun)) {
         Set-StepState -Id "check_openssh" -State "success" -Message "OpenSSH Server is already installed."
@@ -117,11 +124,14 @@ function Ensure-ServiceInstalled {
         if ($script:DryRun) {
             $installLogPath = Join-Path $script:RuntimeRoot "install-openssh.log"
             Set-DetailLogPath -Path $installLogPath
+            $modeLine = if ($mode -eq "cmd") { "[INFO] 将通过单独的 cmd 窗口安装 OpenSSH Server（演练模式）。" } else { "[INFO] 将在后台安装 OpenSSH Server（演练模式）。" }
+            $progressLine = if ($mode -eq "cmd") { "[INFO] 正在通过单独的 cmd 窗口安装 OpenSSH Server，这一步可能需要几分钟。" } else { "[INFO] 正在后台安装 OpenSSH Server，这一步可能需要几分钟。" }
             foreach ($line in @(
                 "[INFO] OpenSSH 安装器已启动（演练模式）。",
+                $modeLine,
                 "[INFO] 正在检查系统组件状态。",
                 "[INFO] 当前未安装 OpenSSH Server，准备开始安装。",
-                "[INFO] 正在后台安装 OpenSSH Server，这一步可能需要几分钟。",
+                $progressLine,
                 "[INFO] OpenSSH Server 安装模拟完成。"
             )) {
                 Add-Content -LiteralPath $installLogPath -Value $line -Encoding utf8
@@ -136,11 +146,6 @@ function Ensure-ServiceInstalled {
                 Remove-Item -LiteralPath $installLogPath -Force
             }
 
-            $mode = (Get-ConfigValue -Config $script:Config -Key "INSTALL_OPENSSH_MODE" -DefaultValue "hidden").ToLowerInvariant()
-            if ($mode -notin @("hidden", "window")) {
-                $mode = "hidden"
-            }
-
             Set-DetailLogPath -Path $installLogPath
             $installerArgs = @(
                 "-NoProfile",
@@ -148,8 +153,13 @@ function Ensure-ServiceInstalled {
                 "-File", ('"{0}"' -f $installerScript),
                 "-LogPath", ('"{0}"' -f $installLogPath)
             )
-            $installer = if ($mode -eq "window") {
-                Start-Process -FilePath "powershell.exe" -ArgumentList $installerArgs -PassThru
+
+            $installer = if ($mode -eq "cmd") {
+                $cmdArgs = @(
+                    "/c",
+                    ('title OpenSSH Installer && powershell.exe {0}' -f ($installerArgs -join " "))
+                )
+                Start-Process -FilePath "cmd.exe" -ArgumentList $cmdArgs -PassThru
             } else {
                 Start-Process -FilePath "powershell.exe" -ArgumentList $installerArgs -PassThru -WindowStyle Hidden
             }
@@ -461,5 +471,6 @@ try {
         user_message = "处理过程中发生错误，请把日志或截图发给管理员。"
     }
 }
+
 
 
