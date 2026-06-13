@@ -1,0 +1,21 @@
+# Suggested additions for /etc/ssh/sshd_config
+#
+# Review them before applying on a production relay host.
+
+AllowTcpForwarding remote
+GatewayPorts clientspecified
+X11Forwarding no
+AllowAgentForwarding no
+PermitTunnel no
+
+Match User tunnel
+    PasswordAuthentication no
+    PubkeyAuthentication yes
+    AllowTcpForwarding remote
+    GatewayPorts clientspecified
+    X11Forwarding no
+    AllowAgentForwarding no
+    PermitTTY no
+    PermitTunnel no
+    PermitUserEnvironment no
+    AllowStreamLocalForwarding no
