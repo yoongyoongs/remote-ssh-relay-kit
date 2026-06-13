@@ -46,6 +46,12 @@ function Write-Log {
     Add-Content -LiteralPath $script:LogPath -Value $line -Encoding utf8
 }
 
+function Set-DetailLogPath {
+    param([string]$Path)
+    $script:Status.detail_log_path = $Path
+    Save-Status
+}
+
 function Save-Status {
     $script:Status | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $script:StatusPath -Encoding utf8
 }
@@ -98,8 +104,9 @@ function Invoke-Step {
 }
 
 function Ensure-ServiceInstalled {
+    $forceInstallInDryRun = ((Get-ConfigValue -Config $script:Config -Key "FORCE_INSTALL_OPENSSH_IN_DRY_RUN" -DefaultValue "false").ToLowerInvariant() -eq "true")
     $service = Get-Service -Name sshd -ErrorAction SilentlyContinue
-    if ($null -ne $service) {
+    if ($null -ne $service -and -not ($script:DryRun -and $forceInstallInDryRun)) {
         Set-StepState -Id "check_openssh" -State "success" -Message "OpenSSH Server is already installed."
         Set-StepState -Id "install_openssh" -State "skipped" -Message "Installation is not required."
         return
@@ -108,9 +115,80 @@ function Ensure-ServiceInstalled {
     Set-StepState -Id "check_openssh" -State "success" -Message "OpenSSH Server is missing."
     Invoke-Step -Id "install_openssh" -Message "Installing OpenSSH Server." -Action {
         if ($script:DryRun) {
-            Start-Sleep -Seconds 1
+            $installLogPath = Join-Path $script:RuntimeRoot "install-openssh.log"
+            Set-DetailLogPath -Path $installLogPath
+            foreach ($line in @(
+                "[INFO] OpenSSH 安装器已启动（演练模式）。",
+                "[INFO] 正在检查系统组件状态。",
+                "[INFO] 当前未安装 OpenSSH Server，准备开始安装。",
+                "[INFO] 正在后台安装 OpenSSH Server，这一步可能需要几分钟。",
+                "[INFO] OpenSSH Server 安装模拟完成。"
+            )) {
+                Add-Content -LiteralPath $installLogPath -Value $line -Encoding utf8
+                Set-StepState -Id "install_openssh" -State "running" -Message ("Installing OpenSSH Server. {0}" -f $line)
+                Start-Sleep -Milliseconds 400
+            }
+            Set-DetailLogPath -Path $script:LogPath
         } else {
-            Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 | Out-Null
+            $installerScript = Join-Path $PSScriptRoot "InstallOpenSsh.ps1"
+            $installLogPath = Join-Path $script:RuntimeRoot "install-openssh.log"
+            if (Test-Path -LiteralPath $installLogPath) {
+                Remove-Item -LiteralPath $installLogPath -Force
+            }
+
+            $mode = (Get-ConfigValue -Config $script:Config -Key "INSTALL_OPENSSH_MODE" -DefaultValue "hidden").ToLowerInvariant()
+            if ($mode -notin @("hidden", "window")) {
+                $mode = "hidden"
+            }
+
+            Set-DetailLogPath -Path $installLogPath
+            $installerArgs = @(
+                "-NoProfile",
+                "-ExecutionPolicy", "Bypass",
+                "-File", ('"{0}"' -f $installerScript),
+                "-LogPath", ('"{0}"' -f $installLogPath)
+            )
+            $installer = if ($mode -eq "window") {
+                Start-Process -FilePath "powershell.exe" -ArgumentList $installerArgs -PassThru
+            } else {
+                Start-Process -FilePath "powershell.exe" -ArgumentList $installerArgs -PassThru -WindowStyle Hidden
+            }
+
+            $lastSeen = 0
+            $lastLine = ""
+            while (-not $installer.HasExited) {
+                Start-Sleep -Seconds 2
+                if (Test-Path -LiteralPath $installLogPath) {
+                    $lines = @(Get-Content -LiteralPath $installLogPath)
+                    if ($lines.Count -gt 0) {
+                        $newLastLine = $lines[$lines.Count - 1]
+                        if ($newLastLine -ne $lastLine) {
+                            Set-StepState -Id "install_openssh" -State "running" -Message ("Installing OpenSSH Server. {0}" -f $newLastLine)
+                            $lastLine = $newLastLine
+                        }
+                        $lastSeen = $lines.Count
+                    }
+                }
+                $installer.Refresh()
+            }
+
+            if (Test-Path -LiteralPath $installLogPath) {
+                $lines = @(Get-Content -LiteralPath $installLogPath)
+                if ($lines.Count -gt 0) {
+                    $lastLine = $lines[$lines.Count - 1]
+                }
+            }
+
+            if ($installer.ExitCode -ne 0) {
+                throw "OpenSSH installer process failed."
+            }
+
+            Start-Sleep -Seconds 2
+            $service = Get-Service -Name sshd -ErrorAction SilentlyContinue
+            if ($null -eq $service) {
+                throw "OpenSSH Server install completed, but sshd service is still missing."
+            }
+            Set-DetailLogPath -Path $script:LogPath
         }
         Set-StepState -Id "install_openssh" -State "success" -Message "OpenSSH Server installed."
     }
@@ -325,13 +403,16 @@ $script:RuntimeRoot = $RuntimeRoot
 $script:StatusPath = Join-Path $RuntimeRoot "status.json"
 $script:ResultPath = Join-Path $RuntimeRoot "result.json"
 $script:LogPath = Join-Path $RuntimeRoot "worker.log"
+$script:Config = $config
 $script:DryRun = ((Get-ConfigValue -Config $config -Key "DRY_RUN" -DefaultValue "false").ToLowerInvariant() -eq "true")
 New-Item -ItemType Directory -Force -Path $RuntimeRoot | Out-Null
+Set-Content -LiteralPath $script:LogPath -Value ("[{0}] Worker initialized." -f (Get-Date -Format "s")) -Encoding utf8
 
 $script:Status = @{
     session_id = $SessionId
     current_step = ""
     overall_status = "running"
+    detail_log_path = $script:LogPath
     steps = @(
         @{ id = "check_admin"; title = "Check administrator privileges"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
         @{ id = "check_openssh"; title = "Check OpenSSH Server"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
@@ -370,12 +451,15 @@ try {
         relay_host = $enrollResponse.relay_host
         remote_port = $enrollResponse.remote_port
         local_user = $env:USERNAME
+        user_message = "连接已经准备完成，请把命令发给管理员。"
     }
 } catch {
     Write-Log "fatal [failed] $($_.Exception.Message)"
     Finish-Run -Ok $false -Payload @{
         error_code = "WORKER_FAILED"
         message = $_.Exception.Message
+        user_message = "处理过程中发生错误，请把日志或截图发给管理员。"
     }
 }
+
 
