@@ -52,6 +52,7 @@ function Get-StepTitle {
     switch ($Id) {
         "check_admin" { return "检查管理员权限" }
         "validate_config" { return "检查配置文件" }
+        "fetch_connection_settings" { return "获取连接配置" }
         "check_openssh" { return "检查 OpenSSH Server" }
         "install_openssh" { return "安装 OpenSSH Server" }
         "start_sshd" { return "启动 sshd 服务" }

@@ -100,8 +100,15 @@ async function main() {
   const apiPort = Number(args["api-port"] || 8787);
   const relaySshPort = Number(args["relay-ssh-port"] || 22);
   const enrollCode = requireArg(args, "enroll-code");
+  const bootstrapToken = requireArg(args, "bootstrap-token");
+  const adminPublicKeyPath = requireArg(args, "admin-public-key-path");
   const portStart = Number(args["port-start"] || 24000);
   const portEnd = Number(args["port-end"] || 24999);
+  const adminPublicKey = fs.readFileSync(adminPublicKeyPath, "utf8").trim();
+
+  if (!adminPublicKey.startsWith("ssh-")) {
+    throw new Error("The admin public key does not look like an SSH public key.");
+  }
 
   const localFiles = [
     path.join(serverDir, "relay-server.js"),
@@ -136,11 +143,14 @@ async function main() {
       `RELAY_SSH_PORT=${relaySshPort}`,
       `RELAY_USER=${relayUser}`,
       `ENROLL_CODES=${enrollCode}`,
+      `BOOTSTRAP_TOKENS=${bootstrapToken}`,
+      `ADMIN_PUBLIC_KEY=${adminPublicKey}`,
       `PORT_RANGE_START=${portStart}`,
       `PORT_RANGE_END=${portEnd}`,
       "STATE_PATH=/opt/remote-ssh-relay/state/devices.json",
       `AUTH_KEYS_PATH=/home/${relayUser}/.ssh/authorized_keys`,
       "LEASE_HOURS=24",
+      "BOOTSTRAP_LEASE_MINUTES=10",
       "",
     ].join("\n");
 

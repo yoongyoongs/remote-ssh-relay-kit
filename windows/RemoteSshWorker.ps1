@@ -44,6 +44,16 @@ function Get-ConfigValue {
     return $DefaultValue
 }
 
+function Get-ConfigFlag {
+    param(
+        [hashtable]$Config,
+        [string]$Key,
+        [bool]$DefaultValue = $false
+    )
+    $defaultText = if ($DefaultValue) { "true" } else { "false" }
+    return ((Get-ConfigValue -Config $Config -Key $Key -DefaultValue $defaultText).ToLowerInvariant() -eq "true")
+}
+
 function Test-IsAdministrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = New-Object Security.Principal.WindowsPrincipal($identity)
@@ -51,7 +61,16 @@ function Test-IsAdministrator {
 }
 
 function Use-LiveRelayInDryRun {
-    return ($script:DryRun -and ((Get-ConfigValue -Config $script:Config -Key "DRY_RUN_USE_LIVE_RELAY" -DefaultValue "false").ToLowerInvariant() -eq "true"))
+    return ($script:DryRun -and (Get-ConfigFlag -Config $script:Config -Key "DRY_RUN_USE_LIVE_RELAY"))
+}
+
+function Use-BootstrapMode {
+    $hasManualEnrollCode = (-not [string]::IsNullOrWhiteSpace($script:Config["ENROLL_CODE"]) -and $script:Config["ENROLL_CODE"] -notlike "*CHANGE-ME*")
+    $hasManualAdminKey = (-not [string]::IsNullOrWhiteSpace($script:Config["ADMIN_PUBLIC_KEY"]) -and $script:Config["ADMIN_PUBLIC_KEY"] -notlike "*CHANGE-ME*")
+    if ($hasManualEnrollCode -and $hasManualAdminKey) {
+        return $false
+    }
+    return $true
 }
 
 function Write-Log {
@@ -127,6 +146,7 @@ function Validate-Config {
 
     Invoke-Step -Id "validate_config" -Message "正在检查配置文件。" -Action {
         $missingItems = @()
+        $bootstrapMode = Use-BootstrapMode
 
         if ([string]::IsNullOrWhiteSpace($Config["RELAY_HOST"])) {
             $missingItems += "RELAY_HOST"
@@ -134,18 +154,91 @@ function Validate-Config {
         if ([string]::IsNullOrWhiteSpace($Config["ENROLL_API"])) {
             $missingItems += "ENROLL_API"
         }
-        if ([string]::IsNullOrWhiteSpace($Config["ENROLL_CODE"]) -or $Config["ENROLL_CODE"] -like "*CHANGE-ME*") {
-            $missingItems += "ENROLL_CODE"
-        }
-        if ([string]::IsNullOrWhiteSpace($Config["ADMIN_PUBLIC_KEY"]) -or $Config["ADMIN_PUBLIC_KEY"] -like "*CHANGE-ME*") {
-            $missingItems += "ADMIN_PUBLIC_KEY"
+        if ($bootstrapMode) {
+            if ([string]::IsNullOrWhiteSpace($Config["BOOTSTRAP_API"])) {
+                $missingItems += "BOOTSTRAP_API"
+            }
+            if ([string]::IsNullOrWhiteSpace($Config["BOOTSTRAP_TOKEN"]) -or $Config["BOOTSTRAP_TOKEN"] -like "*CHANGE-ME*") {
+                $missingItems += "BOOTSTRAP_TOKEN"
+            }
+        } else {
+            if ([string]::IsNullOrWhiteSpace($Config["ENROLL_CODE"]) -or $Config["ENROLL_CODE"] -like "*CHANGE-ME*") {
+                $missingItems += "ENROLL_CODE"
+            }
+            if ([string]::IsNullOrWhiteSpace($Config["ADMIN_PUBLIC_KEY"]) -or $Config["ADMIN_PUBLIC_KEY"] -like "*CHANGE-ME*") {
+                $missingItems += "ADMIN_PUBLIC_KEY"
+            }
         }
 
         if ($missingItems.Count -gt 0) {
             throw ("配置文件缺少必要内容，请先补全：{0}" -f ($missingItems -join "、"))
         }
 
-        Set-StepState -Id "validate_config" -State "success" -Message "配置文件检查通过。"
+        if ($bootstrapMode) {
+            Set-StepState -Id "validate_config" -State "success" -Message "配置文件检查通过，将自动向服务器获取连接配置。"
+        } else {
+            Set-StepState -Id "validate_config" -State "success" -Message "配置文件检查通过。"
+            Set-StepState -Id "fetch_connection_settings" -State "skipped" -Message "当前使用手动配置，无需向服务器申请连接配置。"
+        }
+    }
+}
+
+function Resolve-ConnectionSettings {
+    param([hashtable]$Config)
+
+    if (-not (Use-BootstrapMode)) {
+        $script:ConnectionSettings = @{
+            enroll_code = $Config["ENROLL_CODE"]
+            admin_public_key = $Config["ADMIN_PUBLIC_KEY"]
+        }
+        Set-StepState -Id "fetch_connection_settings" -State "skipped" -Message "当前使用手动配置，无需向服务器申请连接配置。"
+        return
+    }
+
+    Invoke-Step -Id "fetch_connection_settings" -Message "正在向服务器获取连接配置。" -Action {
+        $settingsPath = Join-Path $script:RuntimeRoot "connection-settings.json"
+        if ($script:DryRun -and -not (Use-LiveRelayInDryRun)) {
+            $response = @{
+                ok = $true
+                enroll_code = "AUTO-DRYRUN"
+                admin_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDryRunAdminKey remote-ssh-relay-admin"
+                relay_host = $Config["RELAY_HOST"]
+                relay_ssh_port = [int](Get-ConfigValue -Config $Config -Key "RELAY_SSH_PORT" -DefaultValue "22")
+                relay_user = "tunnel"
+                expires_at = (Get-Date).AddMinutes(10).ToUniversalTime().ToString("s") + "Z"
+            }
+        } else {
+            $body = @{
+                bootstrap_token = $Config["BOOTSTRAP_TOKEN"]
+                device_name = $env:COMPUTERNAME
+                os_type = "windows"
+                local_user = $env:USERNAME
+                launcher_version = "0.1.0"
+            }
+            $response = Invoke-RestMethod `
+                -Method Post `
+                -Uri $Config["BOOTSTRAP_API"] `
+                -ContentType "application/json" `
+                -Body ($body | ConvertTo-Json)
+        }
+
+        if (-not $response.ok) {
+            throw "服务器没有返回有效的连接配置。"
+        }
+        if ([string]::IsNullOrWhiteSpace($response.enroll_code) -or [string]::IsNullOrWhiteSpace($response.admin_public_key)) {
+            throw "服务器返回的连接配置不完整。"
+        }
+
+        $script:ConnectionSettings = @{
+            enroll_code = $response.enroll_code
+            admin_public_key = $response.admin_public_key
+            relay_host = $response.relay_host
+            relay_ssh_port = $response.relay_ssh_port
+            relay_user = $response.relay_user
+            expires_at = $response.expires_at
+        }
+        $script:ConnectionSettings | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $settingsPath -Encoding utf8
+        Set-StepState -Id "fetch_connection_settings" -State "success" -Message "服务器已返回连接配置。"
     }
 }
 
@@ -334,11 +427,10 @@ function Ensure-DeviceKey {
 }
 
 function Ensure-AuthorizedKey {
-    param([hashtable]$Config)
     Invoke-Step -Id "write_authorized_keys" -Message "正在写入管理员公钥。" -Action {
-        $adminKey = $Config["ADMIN_PUBLIC_KEY"]
+        $adminKey = $script:ConnectionSettings.admin_public_key
         if ([string]::IsNullOrWhiteSpace($adminKey) -or $adminKey -like "*CHANGE-ME*") {
-            throw "未配置管理员公钥。请打开 config.ini，把 ADMIN_PUBLIC_KEY= 后面的内容替换成管理员电脑的 SSH 公钥。"
+            throw "服务器没有提供有效的管理员公钥。"
         }
 
         $sshDir = Join-Path $env:USERPROFILE ".ssh"
@@ -377,12 +469,13 @@ function Enroll-Device {
     )
     $responsePath = Join-Path $script:RuntimeRoot "enroll-response.json"
     Invoke-Step -Id "enroll_device" -Message "正在注册到中转服务器。" -Action {
-        if ([string]::IsNullOrWhiteSpace($Config["ENROLL_CODE"]) -or $Config["ENROLL_CODE"] -like "*CHANGE-ME*") {
-            throw "未配置注册码。请打开 config.ini，把 ENROLL_CODE= 后面的内容替换成服务器签发的注册码。"
+        $enrollCode = $script:ConnectionSettings.enroll_code
+        if ([string]::IsNullOrWhiteSpace($enrollCode) -or $enrollCode -like "*CHANGE-ME*") {
+            throw "服务器没有提供有效的注册码。"
         }
 
         $body = @{
-            enroll_code       = $Config["ENROLL_CODE"]
+            enroll_code       = $enrollCode
             device_id         = "win-" + ([guid]::NewGuid().ToString("N").Substring(0, 8))
             device_name       = $env:COMPUTERNAME
             device_public_key = (Get-Content -LiteralPath ($DeviceKeyPath + ".pub") -Raw).Trim()
@@ -393,14 +486,17 @@ function Enroll-Device {
         }
 
         if ($script:DryRun) {
+            $resolvedRelayHost = if ($script:ConnectionSettings.relay_host) { $script:ConnectionSettings.relay_host } else { $Config["RELAY_HOST"] }
+            $resolvedRelaySshPort = if ($script:ConnectionSettings.relay_ssh_port) { [int]$script:ConnectionSettings.relay_ssh_port } else { [int](Get-ConfigValue -Config $Config -Key "RELAY_SSH_PORT" -DefaultValue "22") }
+            $resolvedRelayUser = if ($script:ConnectionSettings.relay_user) { $script:ConnectionSettings.relay_user } else { "tunnel" }
             $response = @{
                 ok               = $true
-                relay_host       = $Config["RELAY_HOST"]
-                relay_ssh_port   = [int](Get-ConfigValue -Config $Config -Key "RELAY_SSH_PORT" -DefaultValue "22")
-                relay_user       = "tunnel"
+                relay_host       = $resolvedRelayHost
+                relay_ssh_port   = $resolvedRelaySshPort
+                relay_user       = $resolvedRelayUser
                 remote_port      = 24137
                 device_record_id = "dev_dry_run"
-                connect_command  = "ssh -p 24137 $($env:USERNAME)@$($Config["RELAY_HOST"])"
+                connect_command  = "ssh -p 24137 $($env:USERNAME)@$resolvedRelayHost"
                 tunnel_options   = @{
                     remote_bind_address = "0.0.0.0"
                     local_host = "127.0.0.1"
@@ -669,7 +765,8 @@ $script:StatusPath = Join-Path $RuntimeRoot "status.json"
 $script:ResultPath = Join-Path $RuntimeRoot "result.json"
 $script:LogPath = Join-Path $RuntimeRoot "worker.log"
 $script:Config = $config
-$script:DryRun = ((Get-ConfigValue -Config $config -Key "DRY_RUN" -DefaultValue "false").ToLowerInvariant() -eq "true")
+$script:DryRun = Get-ConfigFlag -Config $config -Key "DRY_RUN"
+$script:ConnectionSettings = @{}
 New-Item -ItemType Directory -Force -Path $RuntimeRoot | Out-Null
 Set-Content -LiteralPath $script:LogPath -Value ("[{0}] 后台执行器已启动。" -f (Get-Date -Format "s")) -Encoding utf8
 
@@ -681,6 +778,7 @@ $script:Status = @{
     steps = @(
         @{ id = "check_admin"; title = "Check administrator privileges"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
         @{ id = "validate_config"; title = "Validate config"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
+        @{ id = "fetch_connection_settings"; title = "Fetch connection settings"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
         @{ id = "check_openssh"; title = "Check OpenSSH Server"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
         @{ id = "install_openssh"; title = "Install OpenSSH Server"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
         @{ id = "start_sshd"; title = "Start sshd service"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
@@ -703,12 +801,13 @@ try {
     Set-StepState -Id "check_admin" -State "success" -Message $(if ($script:DryRun) { "演练模式下已跳过管理员权限检查。" } else { "已确认管理员权限。" })
 
     Validate-Config -Config $config
+    Resolve-ConnectionSettings -Config $config
     Ensure-ServiceInstalled
     Ensure-SshdRunning
     Ensure-FirewallRule
     Verify-LocalSsh
     $deviceKeyPath = Ensure-DeviceKey
-    Ensure-AuthorizedKey -Config $config
+    Ensure-AuthorizedKey
     $enrollResponse = Enroll-Device -Config $config -DeviceKeyPath $deviceKeyPath
     Start-ReverseTunnel -EnrollResponse $enrollResponse -DeviceKeyPath $deviceKeyPath
     Verify-Tunnel

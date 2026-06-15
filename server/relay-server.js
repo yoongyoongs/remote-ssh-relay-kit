@@ -1,6 +1,7 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 
 const CONFIG = {
   bind: process.env.API_BIND || "0.0.0.0",
@@ -14,11 +15,19 @@ const CONFIG = {
       .map(function (value) { return value.trim(); })
       .filter(Boolean),
   ),
+  bootstrapTokens: new Set(
+    (process.env.BOOTSTRAP_TOKENS || process.env.BOOTSTRAP_TOKEN || "")
+      .split(",")
+      .map(function (value) { return value.trim(); })
+      .filter(Boolean),
+  ),
+  adminPublicKey: (process.env.ADMIN_PUBLIC_KEY || "").trim(),
   portStart: Number(process.env.PORT_RANGE_START || 24000),
   portEnd: Number(process.env.PORT_RANGE_END || 24999),
   statePath: process.env.STATE_PATH || path.join(__dirname, "state", "devices.json"),
   authKeysPath: process.env.AUTH_KEYS_PATH || "",
   leaseHours: Number(process.env.LEASE_HOURS || 24),
+  bootstrapLeaseMinutes: Number(process.env.BOOTSTRAP_LEASE_MINUTES || 10),
 };
 
 function nowIso() {
@@ -41,14 +50,18 @@ function ensureStateFile() {
   const dir = path.dirname(CONFIG.statePath);
   ensureDir(dir);
   if (!fs.existsSync(CONFIG.statePath)) {
-    const initial = { devices: [] };
+    const initial = { devices: [], bootstrapCodes: [] };
     fs.writeFileSync(CONFIG.statePath, JSON.stringify(initial, null, 2));
   }
 }
 
 function loadState() {
   ensureStateFile();
-  return JSON.parse(fs.readFileSync(CONFIG.statePath, "utf8"));
+  const parsed = JSON.parse(fs.readFileSync(CONFIG.statePath, "utf8"));
+  return {
+    devices: Array.isArray(parsed.devices) ? parsed.devices : [],
+    bootstrapCodes: Array.isArray(parsed.bootstrapCodes) ? parsed.bootstrapCodes : [],
+  };
 }
 
 function saveState(state) {
@@ -69,6 +82,34 @@ function allocatePort(devices) {
     }
   }
   throw new Error("No relay ports available in configured range.");
+}
+
+function generateBootstrapCode() {
+  return "AUTO-" + crypto.randomBytes(6).toString("hex").toUpperCase();
+}
+
+function pruneBootstrapCodes(state) {
+  const now = Date.now();
+  state.bootstrapCodes = state.bootstrapCodes.filter(function (entry) {
+    return entry && entry.expiresAt && Date.parse(entry.expiresAt) > now;
+  });
+}
+
+function isStaticEnrollCode(code) {
+  return CONFIG.enrollCodes.has(code.trim());
+}
+
+function consumeBootstrapCode(state, code) {
+  pruneBootstrapCodes(state);
+  const normalized = code.trim();
+  const index = state.bootstrapCodes.findIndex(function (entry) {
+    return entry.code === normalized;
+  });
+  if (index === -1) {
+    return false;
+  }
+  state.bootstrapCodes.splice(index, 1);
+  return true;
 }
 
 function rebuildAuthorizedKeys(devices) {
@@ -159,7 +200,11 @@ async function handleEnroll(request, response) {
     });
   }
 
-  if (!CONFIG.enrollCodes.has(body.enroll_code.trim())) {
+  const state = loadState();
+  const normalizedEnrollCode = body.enroll_code.trim();
+  const matchedBootstrapCode = consumeBootstrapCode(state, normalizedEnrollCode);
+  const matchedStaticCode = isStaticEnrollCode(normalizedEnrollCode);
+  if (!matchedStaticCode && !matchedBootstrapCode) {
     return sendJson(response, 403, {
       ok: false,
       errorCode: "INVALID_ENROLL_CODE",
@@ -167,7 +212,6 @@ async function handleEnroll(request, response) {
     });
   }
 
-  const state = loadState();
   const existing = state.devices.find(function (device) { return device.deviceId === body.device_id; });
   const record = makeDeviceRecord(body, existing, state.devices);
 
@@ -189,6 +233,57 @@ async function handleEnroll(request, response) {
       local_port: 22,
     },
     connect_command: "ssh -p " + record.relayPort + " " + record.localUser + "@" + CONFIG.relayHost,
+  });
+}
+
+async function handleBootstrap(request, response) {
+  const body = await readJsonBody(request);
+  if (!body.bootstrap_token) {
+    return sendJson(response, 400, {
+      ok: false,
+      errorCode: "INVALID_REQUEST",
+      message: "Missing bootstrap token.",
+    });
+  }
+
+  if (!CONFIG.bootstrapTokens.has(body.bootstrap_token.trim())) {
+    return sendJson(response, 403, {
+      ok: false,
+      errorCode: "INVALID_BOOTSTRAP_TOKEN",
+      message: "The bootstrap token is invalid.",
+    });
+  }
+
+  if (!CONFIG.adminPublicKey) {
+    return sendJson(response, 500, {
+      ok: false,
+      errorCode: "ADMIN_PUBLIC_KEY_NOT_CONFIGURED",
+      message: "The relay server does not have an admin public key configured.",
+    });
+  }
+
+  const state = loadState();
+  pruneBootstrapCodes(state);
+  const enrollCode = generateBootstrapCode();
+  const expiresAt = new Date(Date.now() + CONFIG.bootstrapLeaseMinutes * 60 * 1000).toISOString();
+  state.bootstrapCodes.push({
+    code: enrollCode,
+    deviceName: body.device_name || "",
+    osType: body.os_type || "",
+    localUser: body.local_user || "",
+    createdAt: nowIso(),
+    expiresAt: expiresAt,
+  });
+  saveState(state);
+
+  return sendJson(response, 200, {
+    ok: true,
+    enroll_code: enrollCode,
+    admin_public_key: CONFIG.adminPublicKey,
+    relay_host: CONFIG.relayHost,
+    relay_ssh_port: CONFIG.relaySshPort,
+    relay_user: CONFIG.relayUser,
+    expires_at: expiresAt,
   });
 }
 
@@ -262,6 +357,12 @@ const server = http.createServer(function (request, response) {
     }
     if (request.method === "POST" && request.url === "/api/enroll") {
       Promise.resolve(handleEnroll(request, response)).catch(function (error) {
+        handleRequestError(response, error);
+      });
+      return;
+    }
+    if (request.method === "POST" && request.url === "/api/bootstrap") {
+      Promise.resolve(handleBootstrap(request, response)).catch(function (error) {
         handleRequestError(response, error);
       });
       return;
