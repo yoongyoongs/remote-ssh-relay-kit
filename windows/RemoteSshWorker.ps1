@@ -114,7 +114,39 @@ function Invoke-Step {
         [scriptblock]$Action
     )
     Set-StepState -Id $Id -State "running" -Message $Message
-    & $Action
+    try {
+        & $Action
+    } catch {
+        Set-StepState -Id $Id -State "failed" -Message $_.Exception.Message
+        throw
+    }
+}
+
+function Validate-Config {
+    param([hashtable]$Config)
+
+    Invoke-Step -Id "validate_config" -Message "正在检查配置文件。" -Action {
+        $missingItems = @()
+
+        if ([string]::IsNullOrWhiteSpace($Config["RELAY_HOST"])) {
+            $missingItems += "RELAY_HOST"
+        }
+        if ([string]::IsNullOrWhiteSpace($Config["ENROLL_API"])) {
+            $missingItems += "ENROLL_API"
+        }
+        if ([string]::IsNullOrWhiteSpace($Config["ENROLL_CODE"]) -or $Config["ENROLL_CODE"] -like "*CHANGE-ME*") {
+            $missingItems += "ENROLL_CODE"
+        }
+        if ([string]::IsNullOrWhiteSpace($Config["ADMIN_PUBLIC_KEY"]) -or $Config["ADMIN_PUBLIC_KEY"] -like "*CHANGE-ME*") {
+            $missingItems += "ADMIN_PUBLIC_KEY"
+        }
+
+        if ($missingItems.Count -gt 0) {
+            throw ("配置文件缺少必要内容，请先补全：{0}" -f ($missingItems -join "、"))
+        }
+
+        Set-StepState -Id "validate_config" -State "success" -Message "配置文件检查通过。"
+    }
 }
 
 function Ensure-ServiceInstalled {
@@ -306,7 +338,7 @@ function Ensure-AuthorizedKey {
     Invoke-Step -Id "write_authorized_keys" -Message "正在写入管理员公钥。" -Action {
         $adminKey = $Config["ADMIN_PUBLIC_KEY"]
         if ([string]::IsNullOrWhiteSpace($adminKey) -or $adminKey -like "*CHANGE-ME*") {
-            throw "未配置管理员公钥。"
+            throw "未配置管理员公钥。请打开 config.ini，把 ADMIN_PUBLIC_KEY= 后面的内容替换成管理员电脑的 SSH 公钥。"
         }
 
         $sshDir = Join-Path $env:USERPROFILE ".ssh"
@@ -345,6 +377,10 @@ function Enroll-Device {
     )
     $responsePath = Join-Path $script:RuntimeRoot "enroll-response.json"
     Invoke-Step -Id "enroll_device" -Message "正在注册到中转服务器。" -Action {
+        if ([string]::IsNullOrWhiteSpace($Config["ENROLL_CODE"]) -or $Config["ENROLL_CODE"] -like "*CHANGE-ME*") {
+            throw "未配置注册码。请打开 config.ini，把 ENROLL_CODE= 后面的内容替换成服务器签发的注册码。"
+        }
+
         $body = @{
             enroll_code       = $Config["ENROLL_CODE"]
             device_id         = "win-" + ([guid]::NewGuid().ToString("N").Substring(0, 8))
@@ -470,12 +506,12 @@ function Start-ReverseTunnel {
                 if ([string]::IsNullOrWhiteSpace($keeperLogText)) {
                     throw "隧道守护进程启动后立即退出。"
                 }
-                throw ("The tunnel keeper process exited immediately: {0}" -f $keeperLogText)
+                throw ("隧道守护进程启动后立即退出：{0}" -f $keeperLogText)
             }
             if ([string]::IsNullOrWhiteSpace($keeperLogText)) {
                 throw "等待反向隧道就绪超时。"
             }
-            throw ("Timed out while waiting for the reverse tunnel to become ready: {0}" -f $keeperLogText)
+            throw ("等待反向隧道就绪超时：{0}" -f $keeperLogText)
         }
 
         Set-StepState -Id "start_reverse_tunnel" -State "success" -Message "反向隧道已建立，守护进程正在运行。"
@@ -644,6 +680,7 @@ $script:Status = @{
     detail_log_path = $script:LogPath
     steps = @(
         @{ id = "check_admin"; title = "Check administrator privileges"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
+        @{ id = "validate_config"; title = "Validate config"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
         @{ id = "check_openssh"; title = "Check OpenSSH Server"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
         @{ id = "install_openssh"; title = "Install OpenSSH Server"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
         @{ id = "start_sshd"; title = "Start sshd service"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
@@ -665,6 +702,7 @@ try {
     }
     Set-StepState -Id "check_admin" -State "success" -Message $(if ($script:DryRun) { "演练模式下已跳过管理员权限检查。" } else { "已确认管理员权限。" })
 
+    Validate-Config -Config $config
     Ensure-ServiceInstalled
     Ensure-SshdRunning
     Ensure-FirewallRule
@@ -687,7 +725,7 @@ try {
     Finish-Run -Ok $false -Payload @{
         error_code = "WORKER_FAILED"
         message = $_.Exception.Message
-        user_message = "处理过程中发生错误，请把日志或截图发给管理员。"
+        user_message = "处理过程中发生错误。请按提示检查 config.ini，或把日志和截图发给管理员。"
     }
 }
 

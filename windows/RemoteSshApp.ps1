@@ -51,6 +51,7 @@ function Get-StepTitle {
     param([string]$Id)
     switch ($Id) {
         "check_admin" { return "检查管理员权限" }
+        "validate_config" { return "检查配置文件" }
         "check_openssh" { return "检查 OpenSSH Server" }
         "install_openssh" { return "安装 OpenSSH Server" }
         "start_sshd" { return "启动 sshd 服务" }
@@ -78,12 +79,14 @@ function Get-StepLabel {
 
 function Get-StepMessage {
     param(
-        [string]$Status,
-        [string]$StepId
+        [psobject]$Step
     )
-    switch ($Status) {
+    if ($Step.message) {
+        return $Step.message
+    }
+    switch ($Step.status) {
         "running" {
-            switch ($StepId) {
+            switch ($Step.id) {
                 "install_openssh" { return "系统正在安装 OpenSSH，详细信息见下方日志" }
                 "start_reverse_tunnel" { return "正在建立反向 SSH 隧道" }
                 default { return "正在处理" }
@@ -100,7 +103,7 @@ function Format-StepLine {
     param($Step)
     $label = Get-StepLabel -Status $Step.status
     $title = Get-StepTitle -Id $Step.id
-    $message = Get-StepMessage -Status $Step.status -StepId $Step.id
+    $message = Get-StepMessage -Step $Step
     return "[{0}] {1} - {2}" -f $label, $title, $message
 }
 

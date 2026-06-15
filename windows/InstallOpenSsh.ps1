@@ -6,6 +6,18 @@
 $ErrorActionPreference = "Stop"
 $capabilityName = "OpenSSH.Server~~~~0.0.1.0"
 
+function Resolve-FriendlyErrorMessage {
+    param([string]$Message)
+
+    if ([string]::IsNullOrWhiteSpace($Message)) {
+        return "发生未知错误。"
+    }
+    if ($Message -match "requires elevation") {
+        return "当前安装操作需要管理员权限，请通过主程序启动，或使用管理员权限重新运行。"
+    }
+    return $Message
+}
+
 function Write-InstallLog {
     param(
         [string]$Message,
@@ -35,7 +47,7 @@ function Run-DismFallback {
         }
     }
 
-    Write-InstallLog "鍑嗗鏀圭敤 DISM.exe 瀹夎 OpenSSH Server銆? "WARN"
+    Write-InstallLog "准备改用 DISM.exe 安装 OpenSSH Server。" "WARN"
     $args = @(
         "/Online",
         "/Add-Capability",
@@ -58,39 +70,39 @@ function Run-DismFallback {
         }
     }
     if ($proc.ExitCode -ne 0) {
-        throw "DISM.exe 瀹夎澶辫触锛岄€€鍑虹爜锛?($proc.ExitCode)"
+        throw ("DISM.exe 安装失败，退出码：{0}" -f $proc.ExitCode)
     }
 }
 
 try {
-    Write-InstallLog "OpenSSH 瀹夎鍣ㄥ凡鍚姩銆?
+    Write-InstallLog "OpenSSH 安装器已启动。"
     $state = Get-CapabilityState
-    Write-InstallLog "褰撳墠 OpenSSH Server 缁勪欢鐘舵€侊細$state"
+    Write-InstallLog "当前 OpenSSH Server 组件状态：$state"
     if ($state -eq "Installed") {
-        Write-InstallLog "绯荤粺宸茬粡瀹夎 OpenSSH Server锛屾棤闇€閲嶅瀹夎銆?
+        Write-InstallLog "系统已经安装 OpenSSH Server，无需重复安装。"
         exit 0
     }
 
-    Write-InstallLog "寮€濮嬭皟鐢?Windows 鍙€夊姛鑳藉畨瑁?OpenSSH Server锛岃繖涓€姝ュ彲鑳芥寔缁嚑鍒嗛挓銆?
+    Write-InstallLog "开始调用 Windows 可选功能安装 OpenSSH Server，这一步可能持续几分钟。"
     try {
         $result = Add-WindowsCapability -Online -Name $capabilityName -ErrorAction Stop
-        Write-InstallLog ("瀹夎鍛戒护杩斿洖鐘舵€侊細RestartNeeded={0}" -f $result.RestartNeeded)
+        Write-InstallLog ("安装命令返回状态：RestartNeeded={0}" -f $result.RestartNeeded)
     } catch {
-        Write-InstallLog ("Add-WindowsCapability 鎵ц澶辫触锛歿0}" -f $_.Exception.Message) "WARN"
+        Write-InstallLog ("Add-WindowsCapability 执行失败：{0}" -f (Resolve-FriendlyErrorMessage -Message $_.Exception.Message)) "WARN"
         Run-DismFallback
     }
 
     Start-Sleep -Seconds 2
     $state = Get-CapabilityState
-    Write-InstallLog "瀹夎缁撴潫鍚庡啀娆℃鏌ョ粍浠剁姸鎬併€?
-    Write-InstallLog "褰撳墠 OpenSSH Server 缁勪欢鐘舵€侊細$state"
+    Write-InstallLog "安装结束后再次检查组件状态。"
+    Write-InstallLog "当前 OpenSSH Server 组件状态：$state"
     if ($state -ne "Installed") {
-        throw "OpenSSH Server 瀹夎瀹屾垚鍚庣姸鎬佷粛鐒朵笉鏄?Installed銆?
+        throw "OpenSSH Server 安装完成后状态仍然不是 Installed。"
     }
 
-    Write-InstallLog "OpenSSH Server 瀹夎瀹屾垚銆?
+    Write-InstallLog "OpenSSH Server 安装完成。"
 } catch {
-    Write-InstallLog ("OpenSSH 瀹夎澶辫触锛歿0}" -f $_.Exception.Message) "ERROR"
+    Write-InstallLog ("OpenSSH 安装失败：{0}" -f (Resolve-FriendlyErrorMessage -Message $_.Exception.Message)) "ERROR"
     throw
 }
 
