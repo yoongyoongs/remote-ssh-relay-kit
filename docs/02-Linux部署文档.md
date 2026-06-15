@@ -91,7 +91,12 @@ API_PORT=8787
 RELAY_HOST=106.13.171.166
 RELAY_SSH_PORT=22
 RELAY_USER=tunnel
+# 静态注册码（用于兼容老客户端）
 ENROLL_CODES=RLY-20260613-7R4KX9
+# 共享 Bootstrap 引导 Token，支持逗号分隔配置多个
+BOOTSTRAP_TOKENS=RLY-TOKEN-2026-AUTOMATION
+# 操作员/管理员的 SSH 公钥，用于 Bootstrap 模式下自动分发给客户端
+ADMIN_PUBLIC_KEY=ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCznkayj84... qiaokang
 PORT_RANGE_START=24000
 PORT_RANGE_END=24999
 STATE_PATH=/opt/remote-ssh-relay/state/devices.json
@@ -101,25 +106,20 @@ LEASE_HOURS=24
 
 ## 7. 当前已验证结果
 
-在 2026-06-13 已确认：
+在 2026-06-15 已确认：
 
 1. `remote-ssh-relay.service` 正常运行。
 2. `ss -lntp | grep 8787` 显示服务监听 `0.0.0.0:8787`。
-3. `curl http://127.0.0.1:8787/health` 返回：
+3. 云服务器控制台安全组已**全线放通** `8787/TCP` 及 `24000-24999/TCP` 端口段。
+4. 本地执行 `curl.exe http://106.13.171.166:8787/health` 成功返回 `{"ok":true,"service":"remote-ssh-relay"}`。
+5. 本地通过 Bootstrap 动态隧道挂载后，TCP 映射端口 `24012` 连通性测试通过 (`TcpTestSucceeded : True`)。
 
-```json
-{"ok":true,"service":"remote-ssh-relay"}
-```
+## 8. 遗留验证项
 
-## 8. 当前未完成项
+截至 2026-06-15，核心服务端与公网通信环境均已打通。仅剩非服务端本身的实机提权连接调试：
 
-截至 2026-06-13，公网访问还存在一个外部问题：
-
-1. `curl http://106.13.171.166:8787/health` 在服务器自身会超时
-2. 你的 Windows 本机访问同一地址也会超时
-3. 这更像是云安全组或云防火墙未放开 `8787/TCP`
-
-也就是说，应用本身已经起来了，但公网入口还没完全放通。
+1. Windows 真机正式提权模式下的管理员入站登录验收（需要物理点击 UAC 同意）。
+2. macOS 物理机的一键脚本正式链路跑通。
 
 ## 9. 排障命令
 
@@ -155,7 +155,7 @@ ss -lntp | grep :22
 
 ## 10. 建议的下一步
 
-1. 在云服务器控制台明确放行 `8787/TCP`
-2. 放行 `24000-24999/TCP`
-3. 再从 Windows 本机重新验证 `/health`
-4. 通过 Windows 一键启动完成一次真实注册和反向 SSH 建链
+1. 将打包好的 `launcher-kit-windows.zip` 或者是全平台 `launcher-kit.zip` 分发给目标机器用户。
+2. 目标用户在 Windows 本机上双击运行 `start-remote-ssh.bat` 进行提权安装、注册和反向隧道挂载。
+3. macOS 用户则执行 `start-remote-ssh.command`。
+4. 目标机注册成功并拉起反向隧道后，由操作员通过本地私钥和最终生成的连接命令直接发起远程 SSH 连接调试。

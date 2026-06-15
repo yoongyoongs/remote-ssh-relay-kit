@@ -46,9 +46,49 @@ json_get() {
 RELAY_HOST="$(read_ini RELAY_HOST)"
 RELAY_SSH_PORT="$(read_ini RELAY_SSH_PORT)"
 ENROLL_API="$(read_ini ENROLL_API)"
+BOOTSTRAP_API="$(read_ini BOOTSTRAP_API)"
+BOOTSTRAP_TOKEN="$(read_ini BOOTSTRAP_TOKEN)"
 ENROLL_CODE="$(read_ini ENROLL_CODE)"
 ADMIN_PUBLIC_KEY="$(read_ini ADMIN_PUBLIC_KEY)"
 DRY_RUN="$(read_ini DRY_RUN)"
+
+# 检查是否应该使用 Bootstrap 模式
+if [ -z "$ENROLL_CODE" ] || [ "$ENROLL_CODE" = "CHANGE-ME" ] || [ -z "$ADMIN_PUBLIC_KEY" ] || [ "$ADMIN_PUBLIC_KEY" = "CHANGE-ME" ]; then
+  if [ -z "$BOOTSTRAP_TOKEN" ] || [ "$BOOTSTRAP_TOKEN" = "CHANGE-ME" ]; then
+    printf '错误: 配置文件缺少 ENROLL_CODE/ADMIN_PUBLIC_KEY，且未提供有效的 BOOTSTRAP_TOKEN。\n' >&2
+    exit 1
+  fi
+  if [ -z "$BOOTSTRAP_API" ]; then
+    printf '错误: 缺少 BOOTSTRAP_API 配置。\n' >&2
+    exit 1
+  fi
+  
+  step "[0/7] 正在向中继服务器获取动态配置..."
+  DEVICE_NAME="$(scutil --get ComputerName 2>/dev/null || hostname)"
+  LOCAL_USER="$(id -un)"
+  
+  if [ "$DRY_RUN" = "true" ]; then
+    ENROLL_CODE="AUTO-DRYRUN"
+    ADMIN_PUBLIC_KEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDryRunAdminKey remote-ssh-relay-admin"
+  else
+    PAYLOAD="$(printf '{"bootstrap_token":"%s","device_name":"%s","os_type":"macos","local_user":"%s","launcher_version":"0.1.0"}' "$BOOTSTRAP_TOKEN" "$DEVICE_NAME" "$LOCAL_USER")"
+    RESPONSE="$(curl -fsSL -X POST -H 'Content-Type: application/json' -d "$PAYLOAD" "$BOOTSTRAP_API")"
+    
+    ENROLL_CODE="$(printf '%s' "$RESPONSE" | json_get enroll_code)"
+    ADMIN_PUBLIC_KEY="$(printf '%s' "$RESPONSE" | json_get admin_public_key)"
+    
+    # 动态覆盖来自服务器的中继设置
+    RELAY_HOST_NEW="$(printf '%s' "$RESPONSE" | json_get relay_host)"
+    if [ -n "$RELAY_HOST_NEW" ]; then RELAY_HOST="$RELAY_HOST_NEW"; fi
+    
+    RELAY_SSH_PORT_NEW="$(printf '%s' "$RESPONSE" | json_get relay_ssh_port)"
+    if [ -n "$RELAY_SSH_PORT_NEW" ]; then RELAY_SSH_PORT="$RELAY_SSH_PORT_NEW"; fi
+    
+    RELAY_USER_NEW="$(printf '%s' "$RESPONSE" | json_get relay_user)"
+    if [ -n "$RELAY_USER_NEW" ]; then RELAY_USER="$RELAY_USER_NEW"; fi
+  fi
+fi
+
 
 step() {
   printf '%s\n' "$1"

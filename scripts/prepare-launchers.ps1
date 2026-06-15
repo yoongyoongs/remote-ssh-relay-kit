@@ -45,6 +45,8 @@ Copy-Item -Path (Join-Path $macSource "*") -Destination $macOut -Recurse -Force
 Copy-Item -Path (Join-Path $docsSource "*") -Destination $docsOut -Recurse -Force
 
 Stamp-ConfigFile -Path (Join-Path $windowsOut "config.ini")
+Stamp-ConfigFile -Path (Join-Path $macOut "config.ini")
+
 
 Write-Host "Launcher kit prepared:"
 Write-Host "  $OutputRoot"

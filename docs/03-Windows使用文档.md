@@ -129,15 +129,19 @@ config.ini
 
 关键字段：
 
-- `RELAY_HOST`
-- `RELAY_SSH_PORT`
-- `ENROLL_API`
-- `ENROLL_CODE`
-- `ADMIN_PUBLIC_KEY`
-- `DRY_RUN`
-- `SHOW_WORKER_WINDOW`
-- `INSTALL_OPENSSH_MODE`
-- `FORCE_INSTALL_OPENSSH_IN_DRY_RUN`
+- `RELAY_HOST`: 中转服务器公网 IP 或域名。
+- `RELAY_SSH_PORT`: 中转服务器 SSH 端口，默认为 22。
+- `ENROLL_API`: 设备注册接口地址，如 `http://106.13.171.166:8787/api/enroll`。
+- `BOOTSTRAP_API`: 动态引导接口地址，如 `http://106.13.171.166:8787/api/bootstrap`。
+- `BOOTSTRAP_TOKEN`: 全自动 Bootstrap 模式下的引导令牌。如果填了此项，且 `ENROLL_CODE` 留空，则启动时会自动请求该接口拉取注册码与操作员公钥。
+- `ENROLL_CODE`: 静态设备注册码。非 Bootstrap 模式下必须填写。若使用全自动 Bootstrap 模式，请保持留空。
+- `ADMIN_PUBLIC_KEY`: 操作员/管理员的 SSH 公钥。非 Bootstrap 模式下必须填写。若使用全自动 Bootstrap 模式，请保持留空。
+- `DRY_RUN`: 是否为演练模式（`true`/`false`）。若为 `true`，不会实际修改系统设置或建立隧道。
+- `SHOW_WORKER_WINDOW`: 是否显示提权后的 Worker 命令行后台窗口（`true`/`false`），主要用于调试。
+- `INSTALL_OPENSSH_MODE`: `hidden`（后台静默安装 OpenSSH）或 `cmd`（单独开窗口安装）。
+- `FORCE_INSTALL_OPENSSH_IN_DRY_RUN`: 演练模式下是否强行模拟安装 OpenSSH。
+- `DRY_RUN_USE_LIVE_RELAY`: 演练模式下是否调用真实的 API 进行注册和模拟反向隧道建立（便于联调接口）。
+- `TUNNEL_RETRY_SECONDS`: 隧道断开后自动重新连接的间隔秒数。
 
 ## 9. 演练模式
 
