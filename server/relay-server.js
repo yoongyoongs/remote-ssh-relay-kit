@@ -25,9 +25,21 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function ensureDir(dirPath) {
+  if (!fs.existsSync(dirPath)) {
+    try {
+      fs.mkdirSync(dirPath, { recursive: true });
+    } catch (error) {
+      if (error.code !== "EEXIST") {
+        throw error;
+      }
+    }
+  }
+}
+
 function ensureStateFile() {
   const dir = path.dirname(CONFIG.statePath);
-  fs.mkdirSync(dir, { recursive: true });
+  ensureDir(dir);
   if (!fs.existsSync(CONFIG.statePath)) {
     const initial = { devices: [] };
     fs.writeFileSync(CONFIG.statePath, JSON.stringify(initial, null, 2));
@@ -74,11 +86,13 @@ function rebuildAuthorizedKeys(devices) {
   ];
 
   active.forEach(function (device) {
-    const options = 'restrict,port-forwarding,permitlisten="0.0.0.0:' + device.relayPort + '"';
+    // `permitlisten` is not supported by some older OpenSSH builds on commodity cloud images.
+    // Keep the key restricted in a way that still allows reverse port forwarding to work there.
+    const options = "no-agent-forwarding,no-pty,no-user-rc,no-X11-forwarding,port-forwarding";
     lines.push(options + " " + device.devicePublicKey + " " + device.deviceId);
   });
 
-  fs.mkdirSync(path.dirname(CONFIG.authKeysPath), { recursive: true });
+  ensureDir(path.dirname(CONFIG.authKeysPath));
   fs.writeFileSync(CONFIG.authKeysPath, lines.join("\n") + "\n");
 }
 
@@ -219,37 +233,57 @@ async function handleRevoke(request, response) {
   return sendJson(response, 200, { ok: true });
 }
 
-const server = http.createServer(async function (request, response) {
+function handleRequestError(response, error) {
+  if (response.writableEnded) {
+    return;
+  }
+
+  if (error && error.code === "INVALID_JSON") {
+    return sendJson(response, 400, {
+      ok: false,
+      errorCode: "INVALID_JSON",
+      message: "Request body is not valid JSON.",
+    });
+  }
+
+  console.error("[relay-server]", error && error.stack ? error.stack : error);
+  return sendJson(response, 500, {
+    ok: false,
+    errorCode: "INTERNAL_ERROR",
+    message: error.message,
+  });
+}
+
+const server = http.createServer(function (request, response) {
   try {
     if (request.method === "GET" && request.url === "/health") {
-      return sendJson(response, 200, { ok: true, service: "remote-ssh-relay" });
+      sendJson(response, 200, { ok: true, service: "remote-ssh-relay" });
+      return;
     }
     if (request.method === "POST" && request.url === "/api/enroll") {
-      return handleEnroll(request, response);
+      Promise.resolve(handleEnroll(request, response)).catch(function (error) {
+        handleRequestError(response, error);
+      });
+      return;
     }
     if (request.method === "POST" && request.url === "/api/heartbeat") {
-      return handleHeartbeat(request, response);
+      Promise.resolve(handleHeartbeat(request, response)).catch(function (error) {
+        handleRequestError(response, error);
+      });
+      return;
     }
     if (request.method === "POST" && request.url === "/api/revoke") {
-      return handleRevoke(request, response);
-    }
-
-    return sendJson(response, 404, { ok: false, errorCode: "NOT_FOUND" });
-  } catch (error) {
-    if (error && error.code === "INVALID_JSON") {
-      return sendJson(response, 400, {
-        ok: false,
-        errorCode: "INVALID_JSON",
-        message: "Request body is not valid JSON.",
+      Promise.resolve(handleRevoke(request, response)).catch(function (error) {
+        handleRequestError(response, error);
       });
+      return;
     }
 
-    console.error("[relay-server]", error && error.stack ? error.stack : error);
-    return sendJson(response, 500, {
-      ok: false,
-      errorCode: "INTERNAL_ERROR",
-      message: error.message,
-    });
+    sendJson(response, 404, { ok: false, errorCode: "NOT_FOUND" });
+    return;
+  } catch (error) {
+    handleRequestError(response, error);
+    return;
   }
 });
 

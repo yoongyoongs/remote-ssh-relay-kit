@@ -165,7 +165,7 @@ async function main() {
       "systemctl restart ssh || systemctl restart sshd",
       "systemctl restart remote-ssh-relay",
       "systemctl --no-pager --full status remote-ssh-relay | head -n 20",
-      `curl -fsSL http://127.0.0.1:${apiPort}/health`,
+      `for i in $(seq 1 20); do curl -fsSL http://127.0.0.1:${apiPort}/health && break; if [ "$i" -eq 20 ]; then exit 1; fi; sleep 1; done`,
     ].join(" && ");
 
     const { stdout } = await execCommand(conn, `bash -lc '${installCmd.replace(/'/g, `'\\''`)}'`);

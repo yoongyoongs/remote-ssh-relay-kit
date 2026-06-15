@@ -1,7 +1,17 @@
 ﻿param(
     [string]$ConfigPath,
     [string]$RuntimeRoot,
-    [string]$SessionId
+    [string]$SessionId,
+    [string]$Mode = "worker",
+    [string]$DeviceKeyPath = "",
+    [string]$RelayHost = "",
+    [int]$RelaySshPort = 22,
+    [string]$RelayUser = "",
+    [string]$RemoteBindAddress = "",
+    [int]$RemotePort = 0,
+    [string]$LocalHost = "127.0.0.1",
+    [int]$LocalPort = 22,
+    [int]$RetrySeconds = 5
 )
 
 $ErrorActionPreference = "Stop"
@@ -118,13 +128,13 @@ function Ensure-ServiceInstalled {
     }
     $service = Get-Service -Name sshd -ErrorAction SilentlyContinue
     if ($null -ne $service -and -not ($script:DryRun -and $forceInstallInDryRun)) {
-        Set-StepState -Id "check_openssh" -State "success" -Message "OpenSSH Server is already installed."
-        Set-StepState -Id "install_openssh" -State "skipped" -Message "Installation is not required."
+        Set-StepState -Id "check_openssh" -State "success" -Message "OpenSSH Server 已安装。"
+        Set-StepState -Id "install_openssh" -State "skipped" -Message "当前无需安装。"
         return
     }
 
-    Set-StepState -Id "check_openssh" -State "success" -Message "OpenSSH Server is missing."
-    Invoke-Step -Id "install_openssh" -Message "Installing OpenSSH Server." -Action {
+    Set-StepState -Id "check_openssh" -State "success" -Message "未检测到 OpenSSH Server。"
+    Invoke-Step -Id "install_openssh" -Message "正在安装 OpenSSH Server。" -Action {
         if ($script:DryRun) {
             $installLogPath = Join-Path $script:RuntimeRoot "install-openssh.log"
             Set-DetailLogPath -Path $installLogPath
@@ -139,7 +149,7 @@ function Ensure-ServiceInstalled {
                 "[INFO] OpenSSH Server 安装模拟完成。"
             )) {
                 Add-Content -LiteralPath $installLogPath -Value $line -Encoding utf8
-                Set-StepState -Id "install_openssh" -State "running" -Message ("Installing OpenSSH Server. {0}" -f $line)
+                Set-StepState -Id "install_openssh" -State "running" -Message ("正在安装 OpenSSH Server。 {0}" -f $line)
                 Start-Sleep -Milliseconds 400
             }
             Set-DetailLogPath -Path $script:LogPath
@@ -177,7 +187,7 @@ function Ensure-ServiceInstalled {
                     if ($lines.Count -gt 0) {
                         $newLastLine = $lines[$lines.Count - 1]
                         if ($newLastLine -ne $lastLine) {
-                            Set-StepState -Id "install_openssh" -State "running" -Message ("Installing OpenSSH Server. {0}" -f $newLastLine)
+                            Set-StepState -Id "install_openssh" -State "running" -Message ("正在安装 OpenSSH Server。 {0}" -f $newLastLine)
                             $lastLine = $newLastLine
                         }
                         $lastSeen = $lines.Count
@@ -194,32 +204,32 @@ function Ensure-ServiceInstalled {
             }
 
             if ($installer.ExitCode -ne 0) {
-                throw "OpenSSH installer process failed."
+                throw "OpenSSH 安装进程执行失败。"
             }
 
             Start-Sleep -Seconds 2
             $service = Get-Service -Name sshd -ErrorAction SilentlyContinue
             if ($null -eq $service) {
-                throw "OpenSSH Server install completed, but sshd service is still missing."
+                throw "OpenSSH 安装完成，但仍未找到 sshd 服务。"
             }
             Set-DetailLogPath -Path $script:LogPath
         }
-        Set-StepState -Id "install_openssh" -State "success" -Message "OpenSSH Server installed."
+        Set-StepState -Id "install_openssh" -State "success" -Message "OpenSSH Server 安装完成。"
     }
 }
 
 function Ensure-SshdRunning {
-    Invoke-Step -Id "start_sshd" -Message "Starting sshd service." -Action {
+    Invoke-Step -Id "start_sshd" -Message "正在启动 sshd 服务。" -Action {
         if ($script:DryRun -and -not (Use-LiveRelayInDryRun)) {
             Start-Sleep -Milliseconds 500
         } else {
             $service = Get-Service -Name sshd -ErrorAction SilentlyContinue
             if ($null -eq $service) {
-                throw "sshd service is not installed."
+                throw "未安装 sshd 服务。"
             }
             if ($service.Status -ne "Running") {
                 if (Use-LiveRelayInDryRun) {
-                    throw "sshd service is not running, and live dry-run mode will not start services without administrator rights."
+                    throw "sshd 服务未运行，当前演练联调模式不会在没有管理员权限的情况下启动服务。"
                 }
                 Start-Service sshd
             }
@@ -227,15 +237,15 @@ function Ensure-SshdRunning {
                 Set-Service -Name sshd -StartupType Automatic
             }
         }
-        Set-StepState -Id "start_sshd" -State "success" -Message "sshd service is running."
+        Set-StepState -Id "start_sshd" -State "success" -Message "sshd 服务正在运行。"
     }
 }
 
 function Ensure-FirewallRule {
-    Invoke-Step -Id "configure_firewall" -Message "Configuring Windows Firewall." -Action {
+    Invoke-Step -Id "configure_firewall" -Message "正在配置 Windows 防火墙。" -Action {
         if ($script:DryRun) {
             Start-Sleep -Milliseconds 300
-            Set-StepState -Id "configure_firewall" -State "success" -Message "Firewall rule simulated in dry run."
+            Set-StepState -Id "configure_firewall" -State "success" -Message "演练模式下已模拟防火墙规则。"
             return
         }
 
@@ -248,51 +258,55 @@ function Ensure-FirewallRule {
                 -Protocol TCP `
                 -LocalPort 22 `
                 -Action Allow | Out-Null
-            Set-StepState -Id "configure_firewall" -State "success" -Message "Firewall rule created."
+            Set-StepState -Id "configure_firewall" -State "success" -Message "已创建防火墙规则。"
         } else {
-            Set-StepState -Id "configure_firewall" -State "skipped" -Message "Firewall rule already exists."
+            Set-StepState -Id "configure_firewall" -State "skipped" -Message "防火墙规则已存在。"
         }
     }
 }
 
 function Verify-LocalSsh {
-    Invoke-Step -Id "verify_local_ssh" -Message "Verifying local SSH listener." -Action {
+    Invoke-Step -Id "verify_local_ssh" -Message "正在检查本机 SSH 监听。" -Action {
         if ($script:DryRun -and -not (Use-LiveRelayInDryRun)) {
             Start-Sleep -Milliseconds 300
-            Set-StepState -Id "verify_local_ssh" -State "success" -Message "Local SSH verification simulated."
+            Set-StepState -Id "verify_local_ssh" -State "success" -Message "演练模式下已模拟本机 SSH 检查。"
             return
         }
 
         $result = Test-NetConnection 127.0.0.1 -Port 22 -WarningAction SilentlyContinue
         if (-not $result.TcpTestSucceeded) {
-            throw "Local SSH listener on 127.0.0.1:22 is not reachable."
+            throw "127.0.0.1:22 的本机 SSH 监听不可达。"
         }
-        Set-StepState -Id "verify_local_ssh" -State "success" -Message "Local SSH listener is reachable."
+        Set-StepState -Id "verify_local_ssh" -State "success" -Message "本机 SSH 监听可达。"
     }
 }
 
 function Ensure-DeviceKey {
     $keyPath = Join-Path $script:RuntimeRoot "device_key"
-    Invoke-Step -Id "generate_device_key" -Message "Generating device key." -Action {
+    Invoke-Step -Id "generate_device_key" -Message "正在生成设备密钥。" -Action {
         if (-not (Test-Path -LiteralPath $keyPath)) {
-            if ($script:DryRun) {
+            if ($script:DryRun -and -not (Use-LiveRelayInDryRun)) {
                 Set-Content -LiteralPath $keyPath -Value "dry-run-private-key" -Encoding ascii
                 Set-Content -LiteralPath ($keyPath + ".pub") -Value "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDryRunDeviceKey remote-ssh-relay" -Encoding ascii
             } else {
-                & ssh-keygen -q -t ed25519 -N "" -f $keyPath | Out-Null
+                $cmd = 'ssh-keygen.exe -q -t ed25519 -N "" -f "{0}"' -f $keyPath
+                cmd /c $cmd | Out-Null
+                if ($LASTEXITCODE -ne 0) {
+                    throw "生成设备密钥时 ssh-keygen 执行失败。"
+                }
             }
         }
-        Set-StepState -Id "generate_device_key" -State "success" -Message "Device key is ready."
+        Set-StepState -Id "generate_device_key" -State "success" -Message "设备密钥已准备完成。"
     }
     return $keyPath
 }
 
 function Ensure-AuthorizedKey {
     param([hashtable]$Config)
-    Invoke-Step -Id "write_authorized_keys" -Message "Writing admin public key." -Action {
+    Invoke-Step -Id "write_authorized_keys" -Message "正在写入管理员公钥。" -Action {
         $adminKey = $Config["ADMIN_PUBLIC_KEY"]
         if ([string]::IsNullOrWhiteSpace($adminKey) -or $adminKey -like "*CHANGE-ME*") {
-            throw "ADMIN_PUBLIC_KEY is not configured."
+            throw "未配置管理员公钥。"
         }
 
         $sshDir = Join-Path $env:USERPROFILE ".ssh"
@@ -320,7 +334,7 @@ function Ensure-AuthorizedKey {
             & icacls.exe $adminAuthPath /inheritance:r | Out-Null
             & icacls.exe $adminAuthPath /grant "Administrators:F" "SYSTEM:F" | Out-Null
         }
-        Set-StepState -Id "write_authorized_keys" -State "success" -Message "Admin public key is present."
+        Set-StepState -Id "write_authorized_keys" -State "success" -Message "管理员公钥已写入。"
     }
 }
 
@@ -330,7 +344,7 @@ function Enroll-Device {
         [string]$DeviceKeyPath
     )
     $responsePath = Join-Path $script:RuntimeRoot "enroll-response.json"
-    Invoke-Step -Id "enroll_device" -Message "Registering with relay server." -Action {
+    Invoke-Step -Id "enroll_device" -Message "正在注册到中转服务器。" -Action {
         $body = @{
             enroll_code       = $Config["ENROLL_CODE"]
             device_id         = "win-" + ([guid]::NewGuid().ToString("N").Substring(0, 8))
@@ -373,7 +387,7 @@ function Enroll-Device {
         }
 
         $response | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $responsePath -Encoding utf8
-        Set-StepState -Id "enroll_device" -State "success" -Message "Relay registration succeeded."
+        Set-StepState -Id "enroll_device" -State "success" -Message "已成功注册到中转服务器。"
     }
     return Get-Content -LiteralPath $responsePath -Raw | ConvertFrom-Json
 }
@@ -383,53 +397,236 @@ function Start-ReverseTunnel {
         [psobject]$EnrollResponse,
         [string]$DeviceKeyPath
     )
-    $pidPath = Join-Path $script:RuntimeRoot "tunnel.pid"
-    Invoke-Step -Id "start_reverse_tunnel" -Message "Starting reverse SSH tunnel." -Action {
+    $keeperPidPath = Join-Path $script:RuntimeRoot "tunnel-keeper.pid"
+    $keeperLogPath = Join-Path $script:RuntimeRoot "tunnel-keeper.log"
+    $statePath = Join-Path $script:RuntimeRoot "tunnel-state.json"
+    $stopFlagPath = Join-Path $script:RuntimeRoot "tunnel.stop"
+    $retrySeconds = [int](Get-ConfigValue -Config $script:Config -Key "TUNNEL_RETRY_SECONDS" -DefaultValue "5")
+    Invoke-Step -Id "start_reverse_tunnel" -Message "正在启动反向 SSH 隧道。" -Action {
         if ($script:DryRun -and -not (Use-LiveRelayInDryRun)) {
-            Set-Content -LiteralPath $pidPath -Value "99999" -Encoding ascii
-            Set-StepState -Id "start_reverse_tunnel" -State "success" -Message "Dry-run tunnel simulated."
+            Set-Content -LiteralPath $keeperPidPath -Value "99999" -Encoding ascii
+            Set-StepState -Id "start_reverse_tunnel" -State "success" -Message "演练模式下已模拟反向隧道。"
             return
         }
 
-        $args = @(
-            "-N",
-            "-o", "ExitOnForwardFailure=yes",
-            "-o", "ServerAliveInterval=30",
-            "-o", "ServerAliveCountMax=3",
-            "-o", "StrictHostKeyChecking=no",
-            "-i", $DeviceKeyPath,
-            "-p", "$($EnrollResponse.relay_ssh_port)",
-            "-R", "$($EnrollResponse.tunnel_options.remote_bind_address):$($EnrollResponse.remote_port):$($EnrollResponse.tunnel_options.local_host):$($EnrollResponse.tunnel_options.local_port)",
-            "$($EnrollResponse.relay_user)@$($EnrollResponse.relay_host)"
-        )
-        $proc = Start-Process -FilePath "ssh.exe" -ArgumentList $args -PassThru -WindowStyle Hidden
-        Set-Content -LiteralPath $pidPath -Value $proc.Id -Encoding ascii
-        Start-Sleep -Seconds 3
-        if ($proc.HasExited) {
-            throw "The reverse tunnel process exited immediately."
+        foreach ($path in @(
+            $keeperPidPath,
+            $keeperLogPath,
+            $statePath,
+            $stopFlagPath,
+            (Join-Path $script:RuntimeRoot "tunnel.stdout.log"),
+            (Join-Path $script:RuntimeRoot "tunnel.stderr.log")
+        )) {
+            if (Test-Path -LiteralPath $path) {
+                Remove-Item -LiteralPath $path -Force
+            }
         }
-        Set-StepState -Id "start_reverse_tunnel" -State "success" -Message "Reverse tunnel started."
+
+        $keeperScript = $PSCommandPath
+        $keeperArgs = @(
+            "-NoProfile",
+            "-ExecutionPolicy", "Bypass",
+            "-File", ('"{0}"' -f $keeperScript),
+            "-Mode", "tunnel_keeper",
+            "-RuntimeRoot", ('"{0}"' -f $script:RuntimeRoot),
+            "-DeviceKeyPath", ('"{0}"' -f $DeviceKeyPath),
+            "-RelayHost", $EnrollResponse.relay_host,
+            "-RelaySshPort", "$($EnrollResponse.relay_ssh_port)",
+            "-RelayUser", $EnrollResponse.relay_user,
+            "-RemoteBindAddress", $EnrollResponse.tunnel_options.remote_bind_address,
+            "-RemotePort", "$($EnrollResponse.remote_port)",
+            "-LocalHost", $EnrollResponse.tunnel_options.local_host,
+            "-LocalPort", "$($EnrollResponse.tunnel_options.local_port)",
+            "-RetrySeconds", "$retrySeconds"
+        )
+
+        $keeperProc = Start-Process -FilePath "powershell.exe" -ArgumentList $keeperArgs -PassThru -WindowStyle Hidden
+        Set-Content -LiteralPath $keeperPidPath -Value $keeperProc.Id -Encoding ascii
+        Set-DetailLogPath -Path $keeperLogPath
+
+        $connected = $false
+        foreach ($attempt in 1..10) {
+            Start-Sleep -Seconds 2
+            $keeperProc.Refresh()
+            if ($keeperProc.HasExited) {
+                break
+            }
+            if (Test-Path -LiteralPath $statePath) {
+                $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+                if ($state.status -eq "connected") {
+                    $connected = $true
+                    break
+                }
+                if (-not [string]::IsNullOrWhiteSpace($state.message)) {
+                    Set-StepState -Id "start_reverse_tunnel" -State "running" -Message $state.message
+                }
+            }
+        }
+
+        if (-not $connected) {
+            $keeperProc.Refresh()
+            $keeperLogText = if (Test-Path -LiteralPath $keeperLogPath) { (Get-Content -LiteralPath $keeperLogPath -Raw).Trim() } else { "" }
+            if ($keeperProc.HasExited) {
+                if ([string]::IsNullOrWhiteSpace($keeperLogText)) {
+                    throw "隧道守护进程启动后立即退出。"
+                }
+                throw ("The tunnel keeper process exited immediately: {0}" -f $keeperLogText)
+            }
+            if ([string]::IsNullOrWhiteSpace($keeperLogText)) {
+                throw "等待反向隧道就绪超时。"
+            }
+            throw ("Timed out while waiting for the reverse tunnel to become ready: {0}" -f $keeperLogText)
+        }
+
+        Set-StepState -Id "start_reverse_tunnel" -State "success" -Message "反向隧道已建立，守护进程正在运行。"
     }
 }
 
 function Verify-Tunnel {
-    Invoke-Step -Id "verify_tunnel" -Message "Verifying tunnel state." -Action {
+    Invoke-Step -Id "verify_tunnel" -Message "正在校验隧道状态。" -Action {
         if ($script:DryRun -and -not (Use-LiveRelayInDryRun)) {
             Start-Sleep -Milliseconds 200
-            Set-StepState -Id "verify_tunnel" -State "success" -Message "Dry-run tunnel verification succeeded."
+            Set-StepState -Id "verify_tunnel" -State "success" -Message "演练模式下隧道校验成功。"
             return
         }
 
-        $pidPath = Join-Path $script:RuntimeRoot "tunnel.pid"
-        $pid = Get-Content -LiteralPath $pidPath -Raw
-        $proc = Get-Process -Id ([int]$pid) -ErrorAction SilentlyContinue
-        if ($null -eq $proc) {
-            throw "The tunnel process is no longer running."
+        $keeperPidPath = Join-Path $script:RuntimeRoot "tunnel-keeper.pid"
+        $statePath = Join-Path $script:RuntimeRoot "tunnel-state.json"
+        $keeperPid = Get-Content -LiteralPath $keeperPidPath -Raw
+        $keeperProc = Get-Process -Id ([int]$keeperPid) -ErrorAction SilentlyContinue
+        if ($null -eq $keeperProc) {
+            throw "隧道守护进程已退出。"
         }
-        Set-StepState -Id "verify_tunnel" -State "success" -Message "Tunnel process is alive."
+        if (-not (Test-Path -LiteralPath $statePath)) {
+            throw "缺少隧道状态文件。"
+        }
+        $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+        if ($state.status -ne "connected") {
+            throw ("隧道当前未连接，当前状态：{0}" -f $state.status)
+        }
+        Set-StepState -Id "verify_tunnel" -State "success" -Message "隧道守护进程正常，隧道已连接。"
     }
 }
 
+function Write-KeeperLog {
+    param([string]$Message)
+    $line = "[{0}] {1}" -f (Get-Date -Format "s"), $Message
+    Add-Content -LiteralPath $script:KeeperLogPath -Value $line -Encoding utf8
+}
+
+function Save-KeeperState {
+    param(
+        [string]$Status,
+        [string]$Message,
+        [int]$SshPid = 0
+    )
+    @{
+        status = $Status
+        message = $Message
+        ssh_pid = $SshPid
+        updated_at = (Get-Date).ToUniversalTime().ToString("s") + "Z"
+    } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $script:StatePath -Encoding utf8
+}
+
+function Append-KeeperRunLogs {
+    param(
+        [string]$StdoutPath,
+        [string]$StderrPath
+    )
+    if (Test-Path -LiteralPath $StdoutPath) {
+        $stdoutText = (Get-Content -LiteralPath $StdoutPath -Raw).Trim()
+        if (-not [string]::IsNullOrWhiteSpace($stdoutText)) {
+            Add-Content -LiteralPath $script:StdoutLogPath -Value $stdoutText -Encoding utf8
+        }
+        Remove-Item -LiteralPath $StdoutPath -Force
+    }
+    if (Test-Path -LiteralPath $StderrPath) {
+        $stderrText = (Get-Content -LiteralPath $StderrPath -Raw).Trim()
+        if (-not [string]::IsNullOrWhiteSpace($stderrText)) {
+            Add-Content -LiteralPath $script:StderrLogPath -Value $stderrText -Encoding utf8
+            Write-KeeperLog ("ssh 输出错误信息：{0}" -f $stderrText)
+        }
+        Remove-Item -LiteralPath $StderrPath -Force
+    }
+}
+
+function Run-TunnelKeeperMode {
+    $script:KeeperLogPath = Join-Path $RuntimeRoot "tunnel-keeper.log"
+    $script:StatePath = Join-Path $RuntimeRoot "tunnel-state.json"
+    $script:StdoutLogPath = Join-Path $RuntimeRoot "tunnel.stdout.log"
+    $script:StderrLogPath = Join-Path $RuntimeRoot "tunnel.stderr.log"
+    $stopFlagPath = Join-Path $RuntimeRoot "tunnel.stop"
+
+    New-Item -ItemType Directory -Force -Path $RuntimeRoot | Out-Null
+    Set-Content -LiteralPath $script:KeeperLogPath -Value ("[{0}] 隧道守护进程已启动。" -f (Get-Date -Format "s")) -Encoding utf8
+    if (-not (Test-Path -LiteralPath $script:StdoutLogPath)) {
+        Set-Content -LiteralPath $script:StdoutLogPath -Value "" -Encoding utf8
+    }
+    if (-not (Test-Path -LiteralPath $script:StderrLogPath)) {
+        Set-Content -LiteralPath $script:StderrLogPath -Value "" -Encoding utf8
+    }
+
+    $args = @(
+        "-N",
+        "-o", "ExitOnForwardFailure=yes",
+        "-o", "ServerAliveInterval=30",
+        "-o", "ServerAliveCountMax=3",
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=NUL",
+        "-i", $DeviceKeyPath,
+        "-p", "$RelaySshPort",
+        "-R", "$RemoteBindAddress`:$RemotePort`:$LocalHost`:$LocalPort",
+        "$RelayUser@$RelayHost"
+    )
+
+    while (-not (Test-Path -LiteralPath $stopFlagPath)) {
+        $runStamp = Get-Date -Format "yyyyMMdd-HHmmss"
+        $runStdoutPath = Join-Path $RuntimeRoot ("tunnel-run-{0}.stdout.log" -f $runStamp)
+        $runStderrPath = Join-Path $RuntimeRoot ("tunnel-run-{0}.stderr.log" -f $runStamp)
+
+        Write-KeeperLog ("准备建立反向隧道，目标端口 {0} -> {1}:{2}" -f $RemotePort, $LocalHost, $LocalPort)
+        Save-KeeperState -Status "connecting" -Message "正在建立反向 SSH 隧道。"
+
+        $proc = Start-Process -FilePath "ssh.exe" -ArgumentList $args -PassThru -WindowStyle Hidden -RedirectStandardOutput $runStdoutPath -RedirectStandardError $runStderrPath
+        Start-Sleep -Seconds 3
+        $proc.Refresh()
+
+        if (-not $proc.HasExited) {
+            Write-KeeperLog ("反向隧道已建立，ssh 进程 PID={0}" -f $proc.Id)
+            Save-KeeperState -Status "connected" -Message "反向 SSH 隧道已建立。" -SshPid $proc.Id
+            while (-not $proc.HasExited) {
+                if (Test-Path -LiteralPath $stopFlagPath) {
+                    Write-KeeperLog "收到停止标记，准备关闭隧道进程。"
+                    try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch {}
+                    break
+                }
+                Start-Sleep -Seconds 2
+                $proc.Refresh()
+            }
+        }
+
+        Append-KeeperRunLogs -StdoutPath $runStdoutPath -StderrPath $runStderrPath
+        $proc.Refresh()
+        $exitCode = if ($proc.HasExited) { $proc.ExitCode } else { -1 }
+
+        if (Test-Path -LiteralPath $stopFlagPath) {
+            Save-KeeperState -Status "stopped" -Message "隧道守护进程已停止。"
+            Write-KeeperLog "隧道守护进程已停止。"
+            break
+        }
+
+        $retryMessage = "隧道已断开，准备自动重连。"
+        Write-KeeperLog ("ssh 进程已退出，退出码={0}。{1}" -f $exitCode, $retryMessage)
+        Save-KeeperState -Status "retrying" -Message $retryMessage
+        Start-Sleep -Seconds $RetrySeconds
+    }
+
+    exit 0
+}
+
+if ($Mode -eq "tunnel_keeper") {
+    Run-TunnelKeeperMode
+}
 $config = Read-IniFile -Path $ConfigPath
 $script:RuntimeRoot = $RuntimeRoot
 $script:StatusPath = Join-Path $RuntimeRoot "status.json"
@@ -438,7 +635,7 @@ $script:LogPath = Join-Path $RuntimeRoot "worker.log"
 $script:Config = $config
 $script:DryRun = ((Get-ConfigValue -Config $config -Key "DRY_RUN" -DefaultValue "false").ToLowerInvariant() -eq "true")
 New-Item -ItemType Directory -Force -Path $RuntimeRoot | Out-Null
-Set-Content -LiteralPath $script:LogPath -Value ("[{0}] Worker initialized." -f (Get-Date -Format "s")) -Encoding utf8
+Set-Content -LiteralPath $script:LogPath -Value ("[{0}] 后台执行器已启动。" -f (Get-Date -Format "s")) -Encoding utf8
 
 $script:Status = @{
     session_id = $SessionId
@@ -462,11 +659,11 @@ $script:Status = @{
 Save-Status
 
 try {
-    Set-StepState -Id "check_admin" -State "running" -Message "Checking administrator rights."
+    Set-StepState -Id "check_admin" -State "running" -Message "正在检查管理员权限。"
     if (-not $script:DryRun -and -not (Test-IsAdministrator)) {
-        throw "The worker must run with administrator rights."
+        throw "后台执行器必须在管理员权限下运行。"
     }
-    Set-StepState -Id "check_admin" -State "success" -Message $(if ($script:DryRun) { "Administrator check bypassed in dry run." } else { "Administrator rights confirmed." })
+    Set-StepState -Id "check_admin" -State "success" -Message $(if ($script:DryRun) { "演练模式下已跳过管理员权限检查。" } else { "已确认管理员权限。" })
 
     Ensure-ServiceInstalled
     Ensure-SshdRunning
@@ -493,6 +690,10 @@ try {
         user_message = "处理过程中发生错误，请把日志或截图发给管理员。"
     }
 }
+
+
+
+
 
 
 
