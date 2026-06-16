@@ -185,3 +185,27 @@ FORCE_INSTALL_OPENSSH_IN_DRY_RUN=true
 - `result.json`
 - `worker.log`
 - `install-openssh.log`
+
+### 10.4 启动提示“找不到指定模块”或“无法加载脚本”等报错
+
+> [!IMPORTANT]
+> **这通常是因为远程人员直接在 WinRAR / 360压缩 / Zip 预览窗口中双击运行了 `start-remote-ssh.bat`**。
+>
+> **解决方法**：
+> 1. 关闭当前的运行窗口。
+> 2. 鼠标右键点击 `launcher-kit-windows-v2.zip` 压缩包，选择 **“解压到当前文件夹”** 或 **“解压到 launcher-kit-windows-v2\”**。
+> 3. 进入解压后的文件夹，双击运行 **`start-remote-ssh.bat`** 即可。
+
+---
+
+## 11. Windows 7 / PowerShell 2.0 / .NET 3.5 兼容性支持
+
+为了支持较旧的客户端环境（如 Windows 7 SP1 默认携带的 PowerShell 2.0 和 .NET 3.5 框架），本套脚本已进行了深度兼容性适配：
+
+* **JSON 解析与序列化模拟**：在不依赖 PowerShell 3.0+ 自带的 `ConvertFrom-Json` 和 `ConvertTo-Json` 的情况下，本程序利用了老系统自带的 .NET `JavaScriptSerializer` 重构了对应的 Mock 函数，自动处理服务端 API 的 JSON 数据交互。
+* **网络请求兼容**：由于老版本没有 `Invoke-RestMethod` 模块，程序底层自动回退到 .NET `[System.Net.WebRequest]` 建立 HTTP 握手，确保顺利进行设备注册和端口绑定。
+* **网络连通性模拟**：Windows 7 缺失 `Test-NetConnection` 指令，程序底层通过 .NET `[System.Net.Sockets.TcpClient]` 的连接方法对 `22` 端口建立套接字并反馈结果。
+* **.NET 框架兼容**：移除了所有仅在 .NET 4.0+ 支持的 `[string]::IsNullOrWhiteSpace()` 校验，替换为底层的正则表达式匹配。
+* **操作符兼容**：移除了 PowerShell 3.0 引入的 `-in` 与 `-notin` 操作符，全部重构为低版本支持的 `-contains` 与 `-notcontains`。
+* **启动路径兜底**：增加了当 `$PSScriptRoot` 未定义时的自动定位兜底机制。
+

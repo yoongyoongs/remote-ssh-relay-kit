@@ -16,6 +16,186 @@
 
 $ErrorActionPreference = "Stop"
 
+if (-not $PSScriptRoot) {
+    $PSScriptRoot = Split-Path -Parent -Path $MyInvocation.MyCommand.Path
+}
+if (-not $PSCommandPath) {
+    $PSCommandPath = $MyInvocation.MyCommand.Path
+}
+
+
+function Get-ContentRaw {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return "" }
+    return [System.IO.File]::ReadAllText($Path)
+}
+
+function Convert-DictionaryToPSObject {
+    param($InputObject)
+    if ($InputObject -is [System.Collections.IDictionary]) {
+        $customObj = New-Object PSCustomObject
+        foreach ($key in $InputObject.Keys) {
+            $value = Convert-DictionaryToPSObject -InputObject $InputObject[$key]
+            $customObj | Add-Member -MemberType NoteProperty -Name $key -Value $value -Force
+        }
+        return $customObj
+    }
+    elseif ($InputObject -is [System.Collections.IEnumerable] -and $InputObject -isnot [string]) {
+        $list = New-Object System.Collections.ArrayList
+        foreach ($item in $InputObject) {
+            $list.Add((Convert-DictionaryToPSObject -InputObject $item)) | Out-Null
+        }
+        return ,($list.ToArray())
+    }
+    return $InputObject
+}
+
+function Convert-PSObjectToDictionary {
+    param($InputObject)
+    if ($null -eq $InputObject) { return $null }
+    if ($InputObject -is [System.Management.Automation.PSCustomObject]) {
+        $dict = @{}
+        foreach ($prop in $InputObject.PSObject.Properties) {
+            $dict[$prop.Name] = Convert-PSObjectToDictionary -InputObject $prop.Value
+        }
+        return $dict
+    }
+    elseif ($InputObject -is [System.Collections.IDictionary]) {
+        $dict = @{}
+        foreach ($key in $InputObject.Keys) {
+            $dict[$key] = Convert-PSObjectToDictionary -InputObject $InputObject[$key]
+        }
+        return $dict
+    }
+    elseif ($InputObject -is [System.Collections.IEnumerable] -and $InputObject -isnot [string]) {
+        $list = New-Object System.Collections.ArrayList
+        foreach ($item in $InputObject) {
+            $list.Add((Convert-PSObjectToDictionary -InputObject $item)) | Out-Null
+        }
+        return ,($list.ToArray())
+    }
+    return $InputObject
+}
+
+if ($null -eq (Get-Command "ConvertFrom-Json" -ErrorAction SilentlyContinue)) {
+    function ConvertFrom-Json {
+        param(
+            [Parameter(ValueFromPipeline = $true)]
+            [string]$InputObject
+        )
+        begin {
+            [void][System.Reflection.Assembly]::LoadWithPartialName("System.Web.Extensions")
+            $serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+            $json = ""
+        }
+        process {
+            $json += $InputObject
+        }
+        end {
+            if ($json -match '^\s*$') { return $null }
+            $obj = $serializer.DeserializeObject($json)
+            return Convert-DictionaryToPSObject -InputObject $obj
+        }
+    }
+}
+
+if ($null -eq (Get-Command "ConvertTo-Json" -ErrorAction SilentlyContinue)) {
+    function ConvertTo-Json {
+        param(
+            [Parameter(ValueFromPipeline = $true)]
+            $InputObject,
+            [int]$Depth = 0
+        )
+        begin {
+            [void][System.Reflection.Assembly]::LoadWithPartialName("System.Web.Extensions")
+            $serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+        }
+        process {
+            $cleanObj = Convert-PSObjectToDictionary -InputObject $_
+            Write-Output $serializer.Serialize($cleanObj)
+        }
+    }
+}
+
+if ($null -eq (Get-Command "Invoke-RestMethod" -ErrorAction SilentlyContinue)) {
+    function Invoke-RestMethod {
+        param(
+            [string]$Uri,
+            [string]$Method = "Get",
+            [string]$ContentType = "application/json",
+            [string]$Body = ""
+        )
+        $request = [System.Net.WebRequest]::Create($Uri)
+        $request.Method = $Method
+        $request.ContentType = $ContentType
+        $request.Timeout = 15000
+        $request.Proxy = [System.Net.GlobalProxySelection]::GetEmptyWebProxy()
+        
+        if ($Method -eq "Post" -and -not [string]::IsNullOrEmpty($Body)) {
+            $bytes = [System.Text.Encoding]::UTF8.GetBytes($Body)
+            $request.ContentLength = $bytes.Length
+            $requestStream = $request.GetRequestStream()
+            $requestStream.Write($bytes, 0, $bytes.Length)
+            $requestStream.Close()
+        }
+        
+        try {
+            $response = $request.GetResponse()
+            $responseStream = $response.GetResponseStream()
+            $reader = New-Object System.IO.StreamReader($responseStream, [System.Text.Encoding]::UTF8)
+            $responseText = $reader.ReadToEnd()
+            $reader.Close()
+            $responseStream.Close()
+            $response.Close()
+            
+            return ConvertFrom-Json -InputObject $responseText
+        } catch {
+            if ($_.Exception -and $_.Exception.InnerException -is [System.Net.WebException]) {
+                $webEx = $_.Exception.InnerException
+            } elseif ($_.Exception -is [System.Net.WebException]) {
+                $webEx = $_.Exception
+            } else {
+                throw $_
+            }
+            
+            if ($null -ne $webEx.Response) {
+                $responseStream = $webEx.Response.GetResponseStream()
+                $reader = New-Object System.IO.StreamReader($responseStream, [System.Text.Encoding]::UTF8)
+                $errorText = $reader.ReadToEnd()
+                $reader.Close()
+                $responseStream.Close()
+                try {
+                    $errObj = ConvertFrom-Json -InputObject $errorText
+                    if ($null -ne $errObj) { return $errObj }
+                } catch {}
+            }
+            throw $_
+        }
+    }
+}
+
+if ($null -eq (Get-Command "Test-NetConnection" -ErrorAction SilentlyContinue)) {
+    function Test-NetConnection {
+        param(
+            [string]$ComputerName = "127.0.0.1",
+            [int]$Port = 22,
+            $WarningAction
+        )
+        $tcp = New-Object System.Net.Sockets.TcpClient
+        $connected = $false
+        try {
+            $connection = $tcp.ConnectAsync($ComputerName, $Port)
+            if ($connection.Wait(1500) -and $tcp.Connected) {
+                $connected = $true
+            }
+        } catch {}
+        finally {
+            $tcp.Close()
+        }
+        return [PSCustomObject]@{ TcpTestSucceeded = $connected }
+    }
+}
+
 function Read-IniFile {
     param([string]$Path)
     $map = @{}
@@ -38,7 +218,7 @@ function Get-ConfigValue {
         [string]$Key,
         [string]$DefaultValue
     )
-    if ($Config.ContainsKey($Key) -and -not [string]::IsNullOrWhiteSpace($Config[$Key])) {
+    if ($Config.ContainsKey($Key) -and (($Config[$Key]) -match "\S")) {
         return $Config[$Key]
     }
     return $DefaultValue
@@ -65,8 +245,8 @@ function Use-LiveRelayInDryRun {
 }
 
 function Use-BootstrapMode {
-    $hasManualEnrollCode = (-not [string]::IsNullOrWhiteSpace($script:Config["ENROLL_CODE"]) -and $script:Config["ENROLL_CODE"] -notlike "*CHANGE-ME*")
-    $hasManualAdminKey = (-not [string]::IsNullOrWhiteSpace($script:Config["ADMIN_PUBLIC_KEY"]) -and $script:Config["ADMIN_PUBLIC_KEY"] -notlike "*CHANGE-ME*")
+    $hasManualEnrollCode = ((($script:Config["ENROLL_CODE"]) -match "\S") -and $script:Config["ENROLL_CODE"] -notlike "*CHANGE-ME*")
+    $hasManualAdminKey = ((($script:Config["ADMIN_PUBLIC_KEY"]) -match "\S") -and $script:Config["ADMIN_PUBLIC_KEY"] -notlike "*CHANGE-ME*")
     if ($hasManualEnrollCode -and $hasManualAdminKey) {
         return $false
     }
@@ -102,7 +282,7 @@ function Set-StepState {
             if ($State -eq "running" -and -not $step.started_at) {
                 $step.started_at = (Get-Date).ToUniversalTime().ToString("s") + "Z"
             }
-            if ($State -in @("success", "failed", "skipped")) {
+            if (@("success", "failed", "skipped") -contains $State) {
                 $step.finished_at = (Get-Date).ToUniversalTime().ToString("s") + "Z"
             }
             break
@@ -148,24 +328,24 @@ function Validate-Config {
         $missingItems = @()
         $bootstrapMode = Use-BootstrapMode
 
-        if ([string]::IsNullOrWhiteSpace($Config["RELAY_HOST"])) {
+        if ((($Config["RELAY_HOST"]) -match "^\s*$")) {
             $missingItems += "RELAY_HOST"
         }
-        if ([string]::IsNullOrWhiteSpace($Config["ENROLL_API"])) {
+        if ((($Config["ENROLL_API"]) -match "^\s*$")) {
             $missingItems += "ENROLL_API"
         }
         if ($bootstrapMode) {
-            if ([string]::IsNullOrWhiteSpace($Config["BOOTSTRAP_API"])) {
+            if ((($Config["BOOTSTRAP_API"]) -match "^\s*$")) {
                 $missingItems += "BOOTSTRAP_API"
             }
-            if ([string]::IsNullOrWhiteSpace($Config["BOOTSTRAP_TOKEN"]) -or $Config["BOOTSTRAP_TOKEN"] -like "*CHANGE-ME*") {
+            if ((($Config["BOOTSTRAP_TOKEN"]) -match "^\s*$") -or $Config["BOOTSTRAP_TOKEN"] -like "*CHANGE-ME*") {
                 $missingItems += "BOOTSTRAP_TOKEN"
             }
         } else {
-            if ([string]::IsNullOrWhiteSpace($Config["ENROLL_CODE"]) -or $Config["ENROLL_CODE"] -like "*CHANGE-ME*") {
+            if ((($Config["ENROLL_CODE"]) -match "^\s*$") -or $Config["ENROLL_CODE"] -like "*CHANGE-ME*") {
                 $missingItems += "ENROLL_CODE"
             }
-            if ([string]::IsNullOrWhiteSpace($Config["ADMIN_PUBLIC_KEY"]) -or $Config["ADMIN_PUBLIC_KEY"] -like "*CHANGE-ME*") {
+            if ((($Config["ADMIN_PUBLIC_KEY"]) -match "^\s*$") -or $Config["ADMIN_PUBLIC_KEY"] -like "*CHANGE-ME*") {
                 $missingItems += "ADMIN_PUBLIC_KEY"
             }
         }
@@ -225,7 +405,7 @@ function Resolve-ConnectionSettings {
         if (-not $response.ok) {
             throw "服务器没有返回有效的连接配置。"
         }
-        if ([string]::IsNullOrWhiteSpace($response.enroll_code) -or [string]::IsNullOrWhiteSpace($response.admin_public_key)) {
+        if ((($response.enroll_code) -match "^\s*$") -or (($response.admin_public_key) -match "^\s*$")) {
             throw "服务器返回的连接配置不完整。"
         }
 
@@ -248,7 +428,7 @@ function Ensure-ServiceInstalled {
     if ($mode -eq "window") {
         $mode = "cmd"
     }
-    if ($mode -notin @("hidden", "cmd")) {
+    if (@("hidden", "cmd") -notcontains $mode) {
         $mode = "hidden"
     }
     $service = Get-Service -Name sshd -ErrorAction SilentlyContinue
@@ -429,7 +609,7 @@ function Ensure-DeviceKey {
 function Ensure-AuthorizedKey {
     Invoke-Step -Id "write_authorized_keys" -Message "正在写入管理员公钥。" -Action {
         $adminKey = $script:ConnectionSettings.admin_public_key
-        if ([string]::IsNullOrWhiteSpace($adminKey) -or $adminKey -like "*CHANGE-ME*") {
+        if ((($adminKey) -match "^\s*$") -or $adminKey -like "*CHANGE-ME*") {
             throw "服务器没有提供有效的管理员公钥。"
         }
 
@@ -470,7 +650,7 @@ function Enroll-Device {
     $responsePath = Join-Path $script:RuntimeRoot "enroll-response.json"
     Invoke-Step -Id "enroll_device" -Message "正在注册到中转服务器。" -Action {
         $enrollCode = $script:ConnectionSettings.enroll_code
-        if ([string]::IsNullOrWhiteSpace($enrollCode) -or $enrollCode -like "*CHANGE-ME*") {
+        if ((($enrollCode) -match "^\s*$") -or $enrollCode -like "*CHANGE-ME*") {
             throw "服务器没有提供有效的注册码。"
         }
 
@@ -478,7 +658,7 @@ function Enroll-Device {
             enroll_code       = $enrollCode
             device_id         = "win-" + ([guid]::NewGuid().ToString("N").Substring(0, 8))
             device_name       = $env:COMPUTERNAME
-            device_public_key = (Get-Content -LiteralPath ($DeviceKeyPath + ".pub") -Raw).Trim()
+            device_public_key = ((Get-ContentRaw -Path ($DeviceKeyPath + ".pub"))).Trim()
             os_type           = "windows"
             local_user        = $env:USERNAME
             ssh_ready         = $true
@@ -521,7 +701,7 @@ function Enroll-Device {
         $response | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $responsePath -Encoding utf8
         Set-StepState -Id "enroll_device" -State "success" -Message "已成功注册到中转服务器。"
     }
-    return Get-Content -LiteralPath $responsePath -Raw | ConvertFrom-Json
+    return (Get-ContentRaw -Path $responsePath) | ConvertFrom-Json
 }
 
 function Start-ReverseTunnel {
@@ -584,12 +764,12 @@ function Start-ReverseTunnel {
                 break
             }
             if (Test-Path -LiteralPath $statePath) {
-                $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+                $state = (Get-ContentRaw -Path $statePath) | ConvertFrom-Json
                 if ($state.status -eq "connected") {
                     $connected = $true
                     break
                 }
-                if (-not [string]::IsNullOrWhiteSpace($state.message)) {
+                if ((($state.message) -match "\S")) {
                     Set-StepState -Id "start_reverse_tunnel" -State "running" -Message $state.message
                 }
             }
@@ -597,14 +777,14 @@ function Start-ReverseTunnel {
 
         if (-not $connected) {
             $keeperProc.Refresh()
-            $keeperLogText = if (Test-Path -LiteralPath $keeperLogPath) { (Get-Content -LiteralPath $keeperLogPath -Raw).Trim() } else { "" }
+            $keeperLogText = if (Test-Path -LiteralPath $keeperLogPath) { ((Get-ContentRaw -Path $keeperLogPath)).Trim() } else { "" }
             if ($keeperProc.HasExited) {
-                if ([string]::IsNullOrWhiteSpace($keeperLogText)) {
+                if ((($keeperLogText) -match "^\s*$")) {
                     throw "隧道守护进程启动后立即退出。"
                 }
                 throw ("隧道守护进程启动后立即退出：{0}" -f $keeperLogText)
             }
-            if ([string]::IsNullOrWhiteSpace($keeperLogText)) {
+            if ((($keeperLogText) -match "^\s*$")) {
                 throw "等待反向隧道就绪超时。"
             }
             throw ("等待反向隧道就绪超时：{0}" -f $keeperLogText)
@@ -624,7 +804,7 @@ function Verify-Tunnel {
 
         $keeperPidPath = Join-Path $script:RuntimeRoot "tunnel-keeper.pid"
         $statePath = Join-Path $script:RuntimeRoot "tunnel-state.json"
-        $keeperPid = Get-Content -LiteralPath $keeperPidPath -Raw
+        $keeperPid = (Get-ContentRaw -Path $keeperPidPath)
         $keeperProc = Get-Process -Id ([int]$keeperPid) -ErrorAction SilentlyContinue
         if ($null -eq $keeperProc) {
             throw "隧道守护进程已退出。"
@@ -632,7 +812,7 @@ function Verify-Tunnel {
         if (-not (Test-Path -LiteralPath $statePath)) {
             throw "缺少隧道状态文件。"
         }
-        $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+        $state = (Get-ContentRaw -Path $statePath) | ConvertFrom-Json
         if ($state.status -ne "connected") {
             throw ("隧道当前未连接，当前状态：{0}" -f $state.status)
         }
@@ -666,15 +846,15 @@ function Append-KeeperRunLogs {
         [string]$StderrPath
     )
     if (Test-Path -LiteralPath $StdoutPath) {
-        $stdoutText = (Get-Content -LiteralPath $StdoutPath -Raw).Trim()
-        if (-not [string]::IsNullOrWhiteSpace($stdoutText)) {
+        $stdoutText = ((Get-ContentRaw -Path $StdoutPath)).Trim()
+        if ((($stdoutText) -match "\S")) {
             Add-Content -LiteralPath $script:StdoutLogPath -Value $stdoutText -Encoding utf8
         }
         Remove-Item -LiteralPath $StdoutPath -Force
     }
     if (Test-Path -LiteralPath $StderrPath) {
-        $stderrText = (Get-Content -LiteralPath $StderrPath -Raw).Trim()
-        if (-not [string]::IsNullOrWhiteSpace($stderrText)) {
+        $stderrText = ((Get-ContentRaw -Path $StderrPath)).Trim()
+        if ((($stderrText) -match "\S")) {
             Add-Content -LiteralPath $script:StderrLogPath -Value $stderrText -Encoding utf8
             Write-KeeperLog ("ssh 输出错误信息：{0}" -f $stderrText)
         }

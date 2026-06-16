@@ -9,7 +9,7 @@ $capabilityName = "OpenSSH.Server~~~~0.0.1.0"
 function Resolve-FriendlyErrorMessage {
     param([string]$Message)
 
-    if ([string]::IsNullOrWhiteSpace($Message)) {
+    if ((($Message) -match "^\s*$")) {
         return "发生未知错误。"
     }
     if ($Message -match "requires elevation") {
@@ -57,14 +57,14 @@ function Run-DismFallback {
     $proc = Start-Process -FilePath "dism.exe" -ArgumentList $args -PassThru -Wait -WindowStyle Hidden -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
     if (Test-Path -LiteralPath $stdoutPath) {
         foreach ($line in Get-Content -LiteralPath $stdoutPath) {
-            if (-not [string]::IsNullOrWhiteSpace($line)) {
+            if ((($line) -match "\S")) {
                 Write-InstallLog $line
             }
         }
     }
     if (Test-Path -LiteralPath $stderrPath) {
         foreach ($line in Get-Content -LiteralPath $stderrPath) {
-            if (-not [string]::IsNullOrWhiteSpace($line)) {
+            if ((($line) -match "\S")) {
                 Write-InstallLog $line "WARN"
             }
         }
