@@ -2,6 +2,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$BootstrapToken,
     [string]$RelayHost = "yoong-relay.ddnsgeek.com",
+    [string]$ApiHost = "",
     [int]$RelaySshPort = 22,
     [int]$ApiPort = 8787,
     [string]$OutputRoot = ""
@@ -9,14 +10,19 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+$effectiveApiHost = $ApiHost
+if ([string]::IsNullOrEmpty($effectiveApiHost)) {
+    $effectiveApiHost = $RelayHost
+}
+
 function Stamp-ConfigFile {
     param([string]$Path)
 
     $config = Get-Content -LiteralPath $Path -Raw
     $config = $config -replace 'RELAY_HOST=.*', "RELAY_HOST=$RelayHost"
     $config = $config -replace 'RELAY_SSH_PORT=.*', "RELAY_SSH_PORT=$RelaySshPort"
-    $config = $config -replace 'ENROLL_API=.*', "ENROLL_API=http://$RelayHost`:$ApiPort/api/enroll"
-    $config = $config -replace 'BOOTSTRAP_API=.*', "BOOTSTRAP_API=http://$RelayHost`:$ApiPort/api/bootstrap"
+    $config = $config -replace 'ENROLL_API=.*', "ENROLL_API=http://$effectiveApiHost`:$ApiPort/api/enroll"
+    $config = $config -replace 'BOOTSTRAP_API=.*', "BOOTSTRAP_API=http://$effectiveApiHost`:$ApiPort/api/bootstrap"
     $config = $config -replace 'BOOTSTRAP_TOKEN=.*', "BOOTSTRAP_TOKEN=$BootstrapToken"
     $config = $config -replace 'ENROLL_CODE=.*', "ENROLL_CODE="
     $config = $config -replace 'ADMIN_PUBLIC_KEY=.*', "ADMIN_PUBLIC_KEY="

@@ -129,10 +129,10 @@ config.ini
 
 关键字段：
 
-- `RELAY_HOST`: 中转服务器公网 IP 或域名。
+- `RELAY_HOST`: 中转服务器公网 IP 或域名（推荐填写域名，如 `yoong-relay.ddnsgeek.com`）。
 - `RELAY_SSH_PORT`: 中转服务器 SSH 端口，默认为 22。
-- `ENROLL_API`: 设备注册接口地址，如 `http://106.13.171.166:8787/api/enroll`。
-- `BOOTSTRAP_API`: 动态引导接口地址，如 `http://106.13.171.166:8787/api/bootstrap`。
+- `ENROLL_API`: 设备注册接口地址。在国内云环境（如百度云）中，为规避未备案域名的 HTTP ICP 阻断拦截，此处**必须使用服务器的真实公网 IP 地址**（例如 `http://106.13.171.166:8787/api/enroll`）。
+- `BOOTSTRAP_API`: 动态引导接口地址。同样，此处**必须使用 IP 地址**以防止域名 HTTP 阻断（例如 `http://106.13.171.166:8787/api/bootstrap`）。
 - `BOOTSTRAP_TOKEN`: 全自动 Bootstrap 模式下的引导令牌。如果填了此项，且 `ENROLL_CODE` 留空，则启动时会自动请求该接口拉取注册码与操作员公钥。
 - `ENROLL_CODE`: 静态设备注册码。非 Bootstrap 模式下必须填写。若使用全自动 Bootstrap 模式，请保持留空。
 - `ADMIN_PUBLIC_KEY`: 操作员/管理员的 SSH 公钥。非 Bootstrap 模式下必须填写。若使用全自动 Bootstrap 模式，请保持留空。

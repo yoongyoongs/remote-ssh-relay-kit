@@ -155,9 +155,30 @@ curl -i http://106.13.171.166:8787/health
 ss -lntp | grep :22
 ```
 
-## 10. 建议的下一步
+## 10. 打包与分发下一步 (Packaging & Distribution)
 
-1. 将打包好的 `launcher-kit-windows.zip` 或者是全平台 `launcher-kit.zip` 分发给目标机器用户。
-2. 目标用户在 Windows 本机上双击运行 `start-remote-ssh.bat` 进行提权安装、注册和反向隧道挂载。
-3. macOS 用户则执行 `start-remote-ssh.command`。
-4. 目标机注册成功并拉起反向隧道后，由操作员通过本地私钥和最终生成的连接命令直接发起远程 SSH 连接调试。
+由于国内云服务器厂商（如百度云）对未备案域名的 HTTP/API 握手会进行拦截阻断，因此在为用户打包客户端时，必须将 API 连接地址配置为服务器真实公网 IP，而 SSH 中继地址配置为域名。
+
+请使用以下方式生成免备案阻断的客户端安装包：
+
+1. **运行打包脚本生成包**：
+   在操作员机器的 PowerShell 终端执行：
+   ```powershell
+   powershell -File scripts/prepare-launchers.ps1 \
+     -BootstrapToken RLY-TOKEN-2026-AUTOMATION \
+     -RelayHost yoong-relay.ddnsgeek.com \
+     -ApiHost 106.13.171.166
+   ```
+   * 参数说明：
+     - `-RelayHost`: 填您的泛域名，最终返回给您的连接指令和隧道配置会使用域名连接。
+     - `-ApiHost`: 填中继服务器的真实公网 IP，用于 API 握手以避开域名的 HTTP ICP 拦截。
+
+2. **压缩生成分发 zip 压缩包**：
+   ```powershell
+   powershell -Command "Compress-Archive -Path release/launcher-kit/windows/* -DestinationPath release/launcher-kit-windows-v2.zip -Force"
+   ```
+
+3. **分发与运行**：
+   - 将打包好的 `launcher-kit-windows-v2.zip` 发送给用户。
+   - 被协助用户在 Windows 本机上双击运行 `start-remote-ssh.bat` 自动开始隧道建立。
+   - 连接就绪后，客户端会自动拷贝 SSH 连接指令，用户 Ctrl+V 发送给您即可。
