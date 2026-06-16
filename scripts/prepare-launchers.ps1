@@ -1,7 +1,7 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$BootstrapToken,
-    [string]$RelayHost = "106.13.171.166",
+    [string]$RelayHost = "yoong-relay.ddnsgeek.com",
     [int]$RelaySshPort = 22,
     [int]$ApiPort = 8787,
     [string]$OutputRoot = ""
