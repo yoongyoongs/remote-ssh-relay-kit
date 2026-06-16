@@ -426,45 +426,114 @@ function Get-StepTitle {
     }
 }
 
-function Get-StepLabel {
-    param([string]$Status)
-    switch ($Status) {
-        "success" { return "完成" }
-        "failed" { return "失败" }
-        "running" { return "进行中" }
-        "skipped" { return "跳过" }
-        default { return "等待" }
-    }
-}
+$global:lastLineCount = 0
+$global:currentLineCount = 0
+$global:spinnerFrames = @("|", "/", "-", "\")
+$global:spinnerIndex = 0
 
-function Get-StepMessage {
-    param(
-        [psobject]$Step
-    )
-    if ($Step.message) {
-        return $Step.message
-    }
-    switch ($Step.status) {
-        "running" {
-            switch ($Step.id) {
-                "install_openssh" { return "系统正在安装 OpenSSH，详细信息见下方日志" }
-                "start_reverse_tunnel" { return "正在建立反向 SSH 隧道" }
-                default { return "正在处理" }
-            }
+function Set-ClipboardText {
+    param([string]$Text)
+    try {
+        if ($null -ne (Get-Command "Set-Clipboard" -ErrorAction SilentlyContinue)) {
+            Set-Clipboard -Value $Text -ErrorAction Stop
+        } else {
+            $Text | clip
         }
-        "success" { return "已经完成" }
-        "failed" { return "执行失败" }
-        "skipped" { return "已经跳过" }
-        default { return "等待开始" }
+    } catch {
+        try {
+            $Text | clip
+        } catch {}
     }
 }
 
-function Format-StepLine {
+function Set-CursorToTop {
+    try {
+        [Console]::SetCursorPosition(0, 0)
+    } catch {
+        Clear-Host
+    }
+}
+
+function Reset-LineCount {
+    $global:currentLineCount = 0
+}
+
+function Write-ConsoleLine {
+    param(
+        [string]$Text = "",
+        [ConsoleColor]$ForegroundColor = [ConsoleColor]::Gray
+    )
+    Write-Host $Text -ForegroundColor $ForegroundColor
+    $global:currentLineCount++
+}
+
+function Clear-RemainingLines {
+    if ($global:currentLineCount -lt $global:lastLineCount) {
+        $diff = $global:lastLineCount - $global:currentLineCount
+        for ($i = 0; $i -lt $diff; $i++) {
+            Write-Host (New-Object string(' ', 100))
+        }
+        try {
+            [Console]::SetCursorPosition(0, [Console]::CursorTop - $diff)
+        } catch {}
+    }
+    $global:lastLineCount = $global:currentLineCount
+}
+
+function Write-StepLine {
     param($Step)
-    $label = Get-StepLabel -Status $Step.status
     $title = Get-StepTitle -Id $Step.id
-    $message = Get-StepMessage -Step $Step
-    return "[{0}] {1} - {2}" -f $label, $title, $message
+    
+    Write-Host "  " -NoNewline
+    switch ($Step.status) {
+        "success" {
+            Write-Host "[" -NoNewline
+            Write-Host " ✔ " -ForegroundColor Green -NoNewline
+            Write-Host "] " -NoNewline
+            Write-Host ("{0,-28}" -f $title) -NoNewline
+            Write-Host " -------------------- [ " -NoNewline
+            Write-Host "成功" -ForegroundColor Green -NoNewline
+            Write-Host " ]"
+        }
+        "failed" {
+            Write-Host "[" -NoNewline
+            Write-Host " ❌" -ForegroundColor Red -NoNewline
+            Write-Host "] " -NoNewline
+            Write-Host ("{0,-28}" -f $title) -NoNewline
+            Write-Host " -------------------- [ " -NoNewline
+            Write-Host "失败" -ForegroundColor Red -NoNewline
+            Write-Host " ]"
+        }
+        "running" {
+            $spinner = $global:spinnerFrames[$global:spinnerIndex]
+            Write-Host "[" -NoNewline
+            Write-Host " $spinner " -ForegroundColor Yellow -NoNewline
+            Write-Host "] " -NoNewline
+            Write-Host ("{0,-28}" -f $title) -NoNewline
+            Write-Host " -------------------- [ " -NoNewline
+            Write-Host "进行中" -ForegroundColor Yellow -NoNewline
+            Write-Host " ]"
+        }
+        "skipped" {
+            Write-Host "[" -NoNewline
+            Write-Host " ➖ " -ForegroundColor Gray -NoNewline
+            Write-Host "] " -NoNewline
+            Write-Host ("{0,-28}" -f $title) -NoNewline
+            Write-Host " -------------------- [ " -NoNewline
+            Write-Host "已跳过" -ForegroundColor Gray -NoNewline
+            Write-Host " ]"
+        }
+        default {
+            Write-Host "[" -NoNewline
+            Write-Host " ○ " -ForegroundColor DarkGray -NoNewline
+            Write-Host "] " -NoNewline
+            Write-Host ("{0,-28}" -f $title) -NoNewline
+            Write-Host " -------------------- [ " -NoNewline
+            Write-Host "等待" -ForegroundColor DarkGray -NoNewline
+            Write-Host " ]"
+        }
+    }
+    $global:currentLineCount++
 }
 
 function Get-ConfigValue {
@@ -533,47 +602,72 @@ try {
 while ($true) {
     Start-Sleep -Milliseconds 600
     $status = Read-JsonFile -Path $statusPath
-    Clear-Host
-    Write-Host "远程 SSH 接入工具"
-    Write-Host "会话 ID: $sessionId"
-    Write-Host ""
+    
+    # Increment spinner tick
+    $global:spinnerIndex = ($global:spinnerIndex + 1) % $global:spinnerFrames.Count
+    
+    Set-CursorToTop
+    Reset-LineCount
+    
+    Write-ConsoleLine "========================================================================" -ForegroundColor Cyan
+    Write-ConsoleLine "                    ⚡ 远程协助连接助手 (Remote SSH)                    " -ForegroundColor Cyan
+    Write-ConsoleLine ("  会话 ID: {0}" -f $sessionId) -ForegroundColor DarkGray
+    Write-ConsoleLine "========================================================================" -ForegroundColor Cyan
+    Write-ConsoleLine ""
 
     if ($null -eq $status) {
-        Write-Host "[进行中] 正在等待后台任务启动..."
+        Write-ConsoleLine "  [ ⏳ ] 正在等待后台任务启动..." -ForegroundColor Yellow
     } else {
         foreach ($step in $status.steps) {
-            Write-Host (Format-StepLine -Step $step)
+            Write-StepLine -Step $step
         }
     }
 
     $detailLogPath = if ($null -ne $status -and $status.detail_log_path) { $status.detail_log_path } else { Join-Path $runtimeRoot "worker.log" }
     $detailLines = Get-RecentLogLines -Path $detailLogPath -LineCount 8
-    Write-Host ""
-    Write-Host "详细日志"
+    
+    Write-ConsoleLine ""
+    Write-ConsoleLine "┌─ 最近活动日志 (Recent Logs) ──────────────────────────────────────────" -ForegroundColor DarkGray
     if (-not $detailLines) {
-        Write-Host "  正在等待日志输出..."
+        Write-ConsoleLine "  正在等待日志输出..." -ForegroundColor DarkGray
     } else {
         foreach ($line in $detailLines) {
-            Write-Host ("  " + $line)
+            $trimmedLine = if ($line.Length -gt 74) { $line.Substring(0, 71) + "..." } else { $line }
+            Write-ConsoleLine "  $trimmedLine" -ForegroundColor DarkGray
         }
     }
+    Write-ConsoleLine "└───────────────────────────────────────────────────────────────────────" -ForegroundColor DarkGray
 
     if (Test-Path -LiteralPath $resultPath) {
         $result = Read-JsonFile -Path $resultPath
-        Write-Host ""
+        Write-ConsoleLine ""
         if ($result.ok) {
-            Write-Host "连接已经准备完成。" -ForegroundColor Green
-            Write-Host "请把下面这条命令发给管理员："
-            Write-Host $result.connect_command -ForegroundColor Cyan
+            Set-ClipboardText -Text $result.connect_command
+            Write-ConsoleLine "========================================================================" -ForegroundColor Green
+            Write-ConsoleLine " 🎉 连接已成功建立！" -ForegroundColor Green
+            Write-ConsoleLine "========================================================================" -ForegroundColor Green
+            Write-ConsoleLine " 📋 连通命令已【自动复制】到您的剪贴板中！" -ForegroundColor Yellow
+            Write-ConsoleLine " 💬 请直接在聊天窗口中 粘贴 (Ctrl + V) 并发给协助您的管理员即可。" -ForegroundColor Yellow
+            Write-ConsoleLine ""
+            Write-ConsoleLine " ℹ️ 协助命令 (如需手动复制):" -ForegroundColor DarkGray
+            Write-ConsoleLine "    $($result.connect_command)" -ForegroundColor Cyan
+            Write-ConsoleLine "========================================================================" -ForegroundColor Green
         } else {
-            Write-Host "配置失败。" -ForegroundColor Red
+            Write-ConsoleLine "========================================================================" -ForegroundColor Red
+            Write-ConsoleLine " ❌ 配置失败" -ForegroundColor Red
+            Write-ConsoleLine "========================================================================" -ForegroundColor Red
             if ($result.user_message) {
-                Write-Host $result.user_message
+                Write-ConsoleLine " $($result.user_message)" -ForegroundColor Yellow
             }
-            Write-Host $result.message
+            Write-ConsoleLine " 错误信息: $($result.message)" -ForegroundColor DarkGray
+            Write-ConsoleLine " 日志路径: $runtimeRoot" -ForegroundColor DarkGray
+            Write-ConsoleLine "========================================================================" -ForegroundColor Red
         }
+        Clear-RemainingLines
         break
     }
+    
+    Clear-RemainingLines
 }
 
 Write-Host ""
