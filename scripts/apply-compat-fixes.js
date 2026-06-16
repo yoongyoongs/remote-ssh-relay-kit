@@ -11,7 +11,7 @@ function Get-ContentRaw {
 function Convert-DictionaryToPSObject {
     param($InputObject)
     if ($InputObject -is [System.Collections.IDictionary]) {
-        $customObj = New-Object PSCustomObject
+        $customObj = New-Object PSObject
         foreach ($key in $InputObject.Keys) {
             $value = Convert-DictionaryToPSObject -InputObject $InputObject[$key]
             $customObj | Add-Member -MemberType NoteProperty -Name $key -Value $value -Force
@@ -170,7 +170,7 @@ if ($null -eq (Get-Command "Test-NetConnection" -ErrorAction SilentlyContinue)) 
         finally {
             $tcp.Close()
         }
-        return [PSCustomObject]@{ TcpTestSucceeded = $connected }
+        return New-Object PSObject -Property @{ TcpTestSucceeded = $connected }
     }
 }
 `;
@@ -192,6 +192,10 @@ function fixFile(filePath) {
     content = content.replace(/(\$\S+?)\s+-notin\s+@\((.+?)\)/g, '@($2) -notcontains $1');
     content = content.replace(/(\$\S+?)\s+-in\s+@\((.+?)\)/g, '@($2) -contains $1');
 
+    // 3.5. PowerShell 2.0 Compatibility & Robustness Fixes
+    content = content.replace(/\[guid\]::NewGuid\(\)/g, '[System.Guid]::NewGuid()');
+    content = content.replace(/\$parts\s*=\s*\$trimmed\s*-split\s*"=",\s*2/g, '$parts = @($trimmed -split "=", 2)');
+
     // 4. Inject Helpers
     const fileName = path.basename(filePath);
     if (fileName === 'RemoteSshApp.ps1') {
@@ -212,6 +216,38 @@ if (-not $PSCommandPath) {
 
 if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
     $ConfigPath = Join-Path $PSScriptRoot "config.ini"
+}`);
+
+        // Replace detailLines.Count -eq 0 check
+        content = content.replace(/if\s*\(\$detailLines\.Count\s*-eq\s*0\)/g, 'if (-not $detailLines)');
+
+        // Replace Start-Process block with robust UAC and redirection logic
+        content = content.replace(/try\s*\{\s*if\s*\(\$showWorkerWindow\)[\s\S]*?\}\s*\}\s*catch\s*\{\s*Start-Process[\s\S]*?RunAs\s+\|\s+Out-Null\s*\}/g,
+`function Test-IsAdministrator {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+$isParentAdmin = Test-IsAdministrator
+$startupLog = Join-Path $runtimeRoot "worker-startup.log"
+
+try {
+    if ($isParentAdmin) {
+        if ($showWorkerWindow) {
+            Start-Process -FilePath "powershell.exe" -ArgumentList $workerArgs | Out-Null
+        } else {
+            Start-Process -FilePath "powershell.exe" -ArgumentList $workerArgs -WindowStyle Hidden -RedirectStandardError $startupLog | Out-Null
+        }
+    } else {
+        if ($showWorkerWindow) {
+            Start-Process -FilePath "powershell.exe" -ArgumentList $workerArgs -Verb RunAs | Out-Null
+        } else {
+            Start-Process -FilePath "powershell.exe" -ArgumentList $workerArgs -Verb RunAs -WindowStyle Hidden | Out-Null
+        }
+    }
+} catch {
+    Start-Process -FilePath "powershell.exe" -ArgumentList $workerArgs -Verb RunAs | Out-Null
 }`);
     } else if (fileName === 'RemoteSshWorker.ps1') {
         // Add PSScriptRoot fallback for Worker script right after param block

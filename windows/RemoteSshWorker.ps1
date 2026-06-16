@@ -23,6 +23,13 @@ if (-not $PSCommandPath) {
     $PSCommandPath = $MyInvocation.MyCommand.Path
 }
 
+if (-not $PSScriptRoot) {
+    $PSScriptRoot = Split-Path -Parent -Path $MyInvocation.MyCommand.Path
+}
+if (-not $PSCommandPath) {
+    $PSCommandPath = $MyInvocation.MyCommand.Path
+}
+
 
 function Get-ContentRaw {
     param([string]$Path)
@@ -196,6 +203,179 @@ if ($null -eq (Get-Command "Test-NetConnection" -ErrorAction SilentlyContinue)) 
     }
 }
 
+
+function Get-ContentRaw {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return "" }
+    return [System.IO.File]::ReadAllText($Path)
+}
+
+function Convert-DictionaryToPSObject {
+    param($InputObject)
+    if ($InputObject -is [System.Collections.IDictionary]) {
+        $customObj = New-Object PSObject
+        foreach ($key in $InputObject.Keys) {
+            $value = Convert-DictionaryToPSObject -InputObject $InputObject[$key]
+            $customObj | Add-Member -MemberType NoteProperty -Name $key -Value $value -Force
+        }
+        return $customObj
+    }
+    elseif ($InputObject -is [System.Collections.IEnumerable] -and $InputObject -isnot [string]) {
+        $list = New-Object System.Collections.ArrayList
+        foreach ($item in $InputObject) {
+            $list.Add((Convert-DictionaryToPSObject -InputObject $item)) | Out-Null
+        }
+        return ,($list.ToArray())
+    }
+    return $InputObject
+}
+
+function Convert-PSObjectToDictionary {
+    param($InputObject)
+    if ($null -eq $InputObject) { return $null }
+    if ($InputObject -is [System.Management.Automation.PSCustomObject]) {
+        $dict = @{}
+        foreach ($prop in $InputObject.PSObject.Properties) {
+            $dict[$prop.Name] = Convert-PSObjectToDictionary -InputObject $prop.Value
+        }
+        return $dict
+    }
+    elseif ($InputObject -is [System.Collections.IDictionary]) {
+        $dict = @{}
+        foreach ($key in $InputObject.Keys) {
+            $dict[$key] = Convert-PSObjectToDictionary -InputObject $InputObject[$key]
+        }
+        return $dict
+    }
+    elseif ($InputObject -is [System.Collections.IEnumerable] -and $InputObject -isnot [string]) {
+        $list = New-Object System.Collections.ArrayList
+        foreach ($item in $InputObject) {
+            $list.Add((Convert-PSObjectToDictionary -InputObject $item)) | Out-Null
+        }
+        return ,($list.ToArray())
+    }
+    return $InputObject
+}
+
+if ($null -eq (Get-Command "ConvertFrom-Json" -ErrorAction SilentlyContinue)) {
+    function ConvertFrom-Json {
+        param(
+            [Parameter(ValueFromPipeline = $true)]
+            [string]$InputObject
+        )
+        begin {
+            [void][System.Reflection.Assembly]::LoadWithPartialName("System.Web.Extensions")
+            $serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+            $json = ""
+        }
+        process {
+            $json += $InputObject
+        }
+        end {
+            if ($json -match '^\s*$') { return $null }
+            $obj = $serializer.DeserializeObject($json)
+            return Convert-DictionaryToPSObject -InputObject $obj
+        }
+    }
+}
+
+if ($null -eq (Get-Command "ConvertTo-Json" -ErrorAction SilentlyContinue)) {
+    function ConvertTo-Json {
+        param(
+            [Parameter(ValueFromPipeline = $true)]
+            $InputObject,
+            [int]$Depth = 0
+        )
+        begin {
+            [void][System.Reflection.Assembly]::LoadWithPartialName("System.Web.Extensions")
+            $serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+        }
+        process {
+            $cleanObj = Convert-PSObjectToDictionary -InputObject $_
+            Write-Output $serializer.Serialize($cleanObj)
+        }
+    }
+}
+
+if ($null -eq (Get-Command "Invoke-RestMethod" -ErrorAction SilentlyContinue)) {
+    function Invoke-RestMethod {
+        param(
+            [string]$Uri,
+            [string]$Method = "Get",
+            [string]$ContentType = "application/json",
+            [string]$Body = ""
+        )
+        $request = [System.Net.WebRequest]::Create($Uri)
+        $request.Method = $Method
+        $request.ContentType = $ContentType
+        $request.Timeout = 15000
+        $request.Proxy = [System.Net.GlobalProxySelection]::GetEmptyWebProxy()
+        
+        if ($Method -eq "Post" -and -not [string]::IsNullOrEmpty($Body)) {
+            $bytes = [System.Text.Encoding]::UTF8.GetBytes($Body)
+            $request.ContentLength = $bytes.Length
+            $requestStream = $request.GetRequestStream()
+            $requestStream.Write($bytes, 0, $bytes.Length)
+            $requestStream.Close()
+        }
+        
+        try {
+            $response = $request.GetResponse()
+            $responseStream = $response.GetResponseStream()
+            $reader = New-Object System.IO.StreamReader($responseStream, [System.Text.Encoding]::UTF8)
+            $responseText = $reader.ReadToEnd()
+            $reader.Close()
+            $responseStream.Close()
+            $response.Close()
+            
+            return ConvertFrom-Json -InputObject $responseText
+        } catch {
+            if ($_.Exception -and $_.Exception.InnerException -is [System.Net.WebException]) {
+                $webEx = $_.Exception.InnerException
+            } elseif ($_.Exception -is [System.Net.WebException]) {
+                $webEx = $_.Exception
+            } else {
+                throw $_
+            }
+            
+            if ($null -ne $webEx.Response) {
+                $responseStream = $webEx.Response.GetResponseStream()
+                $reader = New-Object System.IO.StreamReader($responseStream, [System.Text.Encoding]::UTF8)
+                $errorText = $reader.ReadToEnd()
+                $reader.Close()
+                $responseStream.Close()
+                try {
+                    $errObj = ConvertFrom-Json -InputObject $errorText
+                    if ($null -ne $errObj) { return $errObj }
+                } catch {}
+            }
+            throw $_
+        }
+    }
+}
+
+if ($null -eq (Get-Command "Test-NetConnection" -ErrorAction SilentlyContinue)) {
+    function Test-NetConnection {
+        param(
+            [string]$ComputerName = "127.0.0.1",
+            [int]$Port = 22,
+            $WarningAction
+        )
+        $tcp = New-Object System.Net.Sockets.TcpClient
+        $connected = $false
+        try {
+            $connection = $tcp.ConnectAsync($ComputerName, $Port)
+            if ($connection.Wait(1500) -and $tcp.Connected) {
+                $connected = $true
+            }
+        } catch {}
+        finally {
+            $tcp.Close()
+        }
+        return New-Object PSObject -Property @{ TcpTestSucceeded = $connected }
+    }
+}
+
 function Read-IniFile {
     param([string]$Path)
     $map = @{}
@@ -204,7 +384,7 @@ function Read-IniFile {
         if (-not $trimmed -or $trimmed.StartsWith("#") -or $trimmed.StartsWith(";")) {
             continue
         }
-        $parts = $trimmed -split "=", 2
+        $parts = @($trimmed -split "=", 2)
         if ($parts.Count -eq 2) {
             $map[$parts[0].Trim()] = $parts[1].Trim()
         }
@@ -656,7 +836,7 @@ function Enroll-Device {
 
         $body = @{
             enroll_code       = $enrollCode
-            device_id         = "win-" + ([guid]::NewGuid().ToString("N").Substring(0, 8))
+            device_id         = "win-" + ([System.Guid]::NewGuid().ToString("N").Substring(0, 8))
             device_name       = $env:COMPUTERNAME
             device_public_key = ((Get-ContentRaw -Path ($DeviceKeyPath + ".pub"))).Trim()
             os_type           = "windows"
