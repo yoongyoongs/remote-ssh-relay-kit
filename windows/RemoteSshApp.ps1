@@ -17,6 +17,36 @@ if ((($ConfigPath) -match "^\s*$")) {
 
 $ErrorActionPreference = "Stop"
 
+try {
+    $typeDefinition = @"
+    using System;
+    using System.Runtime.InteropServices;
+    public class ConsoleHelper {
+        const int STD_INPUT_HANDLE = -10;
+        const uint ENABLE_QUICK_EDIT_MODE = 0x0040;
+        const uint ENABLE_EXTENDED_FLAGS = 0x0080;
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern IntPtr GetStdHandle(int nStdHandle);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool GetConsoleMode(IntPtr hConsoleHandle, out uint lpMode);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool SetConsoleMode(IntPtr hConsoleHandle, uint dwMode);
+        public static void DisableQuickEdit() {
+            try {
+                IntPtr hStdin = GetStdHandle(STD_INPUT_HANDLE);
+                uint mode;
+                if (GetConsoleMode(hStdin, out mode)) {
+                    mode &= ~ENABLE_QUICK_EDIT_MODE;
+                    mode |= ENABLE_EXTENDED_FLAGS;
+                    SetConsoleMode(hStdin, mode);
+                }
+            } catch {}
+        }
+    }
+"@
+    Add-Type -TypeDefinition $typeDefinition -ErrorAction SilentlyContinue
+    [ConsoleHelper]::DisableQuickEdit()
+} catch {}
 
 function Get-ContentRaw {
     param([string]$Path)
@@ -458,12 +488,28 @@ function Reset-LineCount {
     $global:currentLineCount = 0
 }
 
+function Clear-LineRemainder {
+    $width = 80
+    try {
+        $width = [Console]::WindowWidth
+    } catch {}
+    $left = 0
+    try {
+        $left = [Console]::CursorLeft
+    } catch {}
+    if ($left -lt $width) {
+        Write-Host (New-Object string(' ', ($width - $left - 1))) -NoNewline
+    }
+    Write-Host ""
+}
+
 function Write-ConsoleLine {
     param(
         [string]$Text = "",
         [ConsoleColor]$ForegroundColor = [ConsoleColor]::Gray
     )
-    Write-Host $Text -ForegroundColor $ForegroundColor
+    Write-Host $Text -ForegroundColor $ForegroundColor -NoNewline
+    Clear-LineRemainder
     $global:currentLineCount++
 }
 
@@ -493,7 +539,7 @@ function Write-StepLine {
             Write-Host ("{0,-28}" -f $title) -NoNewline
             Write-Host " -------------------- [ " -NoNewline
             Write-Host "成功" -ForegroundColor Green -NoNewline
-            Write-Host " ]"
+            Write-Host " ]" -NoNewline
         }
         "failed" {
             Write-Host "[" -NoNewline
@@ -502,7 +548,7 @@ function Write-StepLine {
             Write-Host ("{0,-28}" -f $title) -NoNewline
             Write-Host " -------------------- [ " -NoNewline
             Write-Host "失败" -ForegroundColor Red -NoNewline
-            Write-Host " ]"
+            Write-Host " ]" -NoNewline
         }
         "running" {
             $spinner = $global:spinnerFrames[$global:spinnerIndex]
@@ -512,7 +558,7 @@ function Write-StepLine {
             Write-Host ("{0,-28}" -f $title) -NoNewline
             Write-Host " -------------------- [ " -NoNewline
             Write-Host "进行中" -ForegroundColor Yellow -NoNewline
-            Write-Host " ]"
+            Write-Host " ]" -NoNewline
         }
         "skipped" {
             Write-Host "[" -NoNewline
@@ -521,7 +567,7 @@ function Write-StepLine {
             Write-Host ("{0,-28}" -f $title) -NoNewline
             Write-Host " -------------------- [ " -NoNewline
             Write-Host "已跳过" -ForegroundColor Gray -NoNewline
-            Write-Host " ]"
+            Write-Host " ]" -NoNewline
         }
         default {
             Write-Host "[" -NoNewline
@@ -530,9 +576,10 @@ function Write-StepLine {
             Write-Host ("{0,-28}" -f $title) -NoNewline
             Write-Host " -------------------- [ " -NoNewline
             Write-Host "等待" -ForegroundColor DarkGray -NoNewline
-            Write-Host " ]"
+            Write-Host " ]" -NoNewline
         }
     }
+    Clear-LineRemainder
     $global:currentLineCount++
 }
 
@@ -589,6 +636,7 @@ try {
             Start-Process -FilePath "powershell.exe" -ArgumentList $workerArgs -WindowStyle Hidden -RedirectStandardError $startupLog | Out-Null
         }
     } else {
+        Write-Host "正在请求管理员权限，请在随后的系统弹窗中选择 [是/允许]..." -ForegroundColor Yellow
         if ($showWorkerWindow) {
             Start-Process -FilePath "powershell.exe" -ArgumentList $workerArgs -Verb RunAs | Out-Null
         } else {
@@ -596,6 +644,7 @@ try {
         }
     }
 } catch {
+    Write-Host "正在请求管理员权限，请在随后的系统弹窗中选择 [是/允许]..." -ForegroundColor Yellow
     Start-Process -FilePath "powershell.exe" -ArgumentList $workerArgs -Verb RunAs | Out-Null
 }
 

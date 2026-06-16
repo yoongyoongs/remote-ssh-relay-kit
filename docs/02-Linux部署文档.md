@@ -81,14 +81,16 @@ node ./scripts/deploy-relay.mjs \
 8. 重启 `ssh/sshd`
 9. 启动 `remote-ssh-relay.service`
 
-## 6. 当前服务配置重点
+## 6. 当前服务配置重点与泛域名支持
 
 `relay.env` 里至少要确认这些值：
 
 ```ini
 API_BIND=0.0.0.0
 API_PORT=8787
-RELAY_HOST=106.13.171.166
+# 支持配置泛域名以动态生成随机子域名防冲突（需要域名支持 Wildcard 泛解析指向该 IP）
+# 例如设置为 *.yoong-relay.ddnsgeek.com
+RELAY_HOST=*.yoong-relay.ddnsgeek.com
 RELAY_SSH_PORT=22
 RELAY_USER=tunnel
 # 静态注册码（用于兼容老客户端）
