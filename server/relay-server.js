@@ -220,9 +220,15 @@ async function handleEnroll(request, response) {
   saveState(state);
   rebuildAuthorizedKeys(state.devices);
 
+  let responseHost = CONFIG.relayHost;
+  if (responseHost.includes("*")) {
+    const randomHex = crypto.randomBytes(4).toString("hex");
+    responseHost = responseHost.replace("*", randomHex);
+  }
+
   return sendJson(response, 200, {
     ok: true,
-    relay_host: CONFIG.relayHost,
+    relay_host: responseHost,
     relay_ssh_port: CONFIG.relaySshPort,
     relay_user: CONFIG.relayUser,
     remote_port: record.relayPort,
@@ -232,7 +238,7 @@ async function handleEnroll(request, response) {
       local_host: "127.0.0.1",
       local_port: 22,
     },
-    connect_command: "ssh -p " + record.relayPort + " " + record.localUser + "@" + CONFIG.relayHost,
+    connect_command: "ssh -p " + record.relayPort + " " + record.localUser + "@" + responseHost,
   });
 }
 
@@ -276,11 +282,17 @@ async function handleBootstrap(request, response) {
   });
   saveState(state);
 
+  let responseHost = CONFIG.relayHost;
+  if (responseHost.includes("*")) {
+    const randomHex = crypto.randomBytes(4).toString("hex");
+    responseHost = responseHost.replace("*", randomHex);
+  }
+
   return sendJson(response, 200, {
     ok: true,
     enroll_code: enrollCode,
     admin_public_key: CONFIG.adminPublicKey,
-    relay_host: CONFIG.relayHost,
+    relay_host: responseHost,
     relay_ssh_port: CONFIG.relaySshPort,
     relay_user: CONFIG.relayUser,
     expires_at: expiresAt,
