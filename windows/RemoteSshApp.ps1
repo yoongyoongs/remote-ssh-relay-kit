@@ -338,7 +338,13 @@ if ($null -eq (Get-Command "Invoke-RestMethod" -ErrorAction SilentlyContinue)) {
                 try {
                     $errObj = ConvertFrom-Json -InputObject $errorText
                     if ($null -ne $errObj) { return $errObj }
-                } catch {}
+                } catch {
+                    $snippet = $errorText
+                    if ($errorText.Length -gt 200) {
+                        $snippet = $errorText.Substring(0, 200) + "..."
+                    }
+                    Write-Host "warning [http] HTTP request failed with non-JSON response: $snippet" -ForegroundColor Yellow
+                }
             }
             throw $_
         }
