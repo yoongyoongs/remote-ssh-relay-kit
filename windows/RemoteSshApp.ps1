@@ -724,6 +724,11 @@ try {
     Write-Host "========================================================================" -ForegroundColor Red
     Write-Host " ❌ 主程序运行发生致命错误：" -ForegroundColor Red
     Write-Host " $_" -ForegroundColor Yellow
+    if ($_.ScriptStackTrace) {
+        Write-Host ""
+        Write-Host " 堆栈轨迹:" -ForegroundColor DarkGray
+        Write-Host " $_.ScriptStackTrace" -ForegroundColor DarkGray
+    }
     Write-Host "========================================================================" -ForegroundColor Red
     Write-Host ""
 }
@@ -731,6 +736,7 @@ try {
 Write-Host ""
 Write-Host "按 Enter 键关闭窗口。"
 [void][System.Console]::ReadLine()
+
 
 
 

@@ -568,15 +568,17 @@ function Ensure-SshdRunning {
         } else {
             $service = Get-Service -Name sshd -ErrorAction SilentlyContinue
             if ($null -eq $service) {
+                Write-Log "error [sshd] sshd service is not registered in system."
                 throw "未安装 sshd 服务。"
             }
+            Write-Log "info [sshd] current service status: $($service.Status)"
             if ($service.Status -ne "Running") {
-                if (Use-LiveRelayInDryRun) {
-                    throw "sshd 服务未运行，当前演练联调模式不会在没有管理员权限的情况下启动服务。"
-                }
+                Write-Log "info [sshd] attempting to start sshd service."
                 Start-Service sshd
+                Write-Log "info [sshd] start command invoked successfully."
             }
             if (-not (Use-LiveRelayInDryRun)) {
+                Write-Log "info [sshd] setting startup type of sshd to Automatic."
                 Set-Service -Name sshd -StartupType Automatic
             }
         }
@@ -592,8 +594,10 @@ function Ensure-FirewallRule {
             return
         }
 
+        Write-Log "info [firewall] checking net-firewall rule for RemoteSshRelay-OpenSSH..."
         $rule = Get-NetFirewallRule -Name "RemoteSshRelay-OpenSSH" -ErrorAction SilentlyContinue
         if ($null -eq $rule) {
+            Write-Log "info [firewall] rule not found, creating rule RemoteSshRelay-OpenSSH allowing inbound port 22..."
             New-NetFirewallRule `
                 -Name "RemoteSshRelay-OpenSSH" `
                 -DisplayName "Remote SSH Relay - OpenSSH" `
@@ -602,7 +606,9 @@ function Ensure-FirewallRule {
                 -LocalPort 22 `
                 -Action Allow | Out-Null
             Set-StepState -Id "configure_firewall" -State "success" -Message "已创建防火墙规则。"
+            Write-Log "info [firewall] firewall rule created successfully."
         } else {
+            Write-Log "info [firewall] firewall rule RemoteSshRelay-OpenSSH already exists."
             Set-StepState -Id "configure_firewall" -State "skipped" -Message "防火墙规则已存在。"
         }
     }
@@ -616,10 +622,25 @@ function Verify-LocalSsh {
             return
         }
 
+        Write-Log "info [localssh] testing TCP connection to 127.0.0.1:22..."
         $result = Test-NetConnection 127.0.0.1 -Port 22 -WarningAction SilentlyContinue
         if (-not $result.TcpTestSucceeded) {
+            Write-Log "error [localssh] TCP connection to 127.0.0.1:22 failed. Running netstat diagnostic..."
+            try {
+                $netstatOut = cmd.exe /c "netstat -ano"
+                # 在 PowerShell 2.0 中，用 Select-String 过滤包含 :22 的行并转换输出为日志
+                $netstatFiltered = @($netstatOut | Select-String -Pattern ":22\s")
+                if ($netstatFiltered.Count -gt 0) {
+                    Write-Log "info [localssh] netstat processes occupying port 22:`n$($netstatFiltered -join "`n")"
+                } else {
+                    Write-Log "info [localssh] netstat shows no active listener on port 22."
+                }
+            } catch {
+                Write-Log "warning [localssh] failed to run netstat diagnostic: $($_.Exception.Message)"
+            }
             throw "127.0.0.1:22 的本机 SSH 监听不可达。"
         }
+        Write-Log "info [localssh] TCP connection to 127.0.0.1:22 succeeded."
         Set-StepState -Id "verify_local_ssh" -State "success" -Message "本机 SSH 监听可达。"
     }
 }
@@ -1050,17 +1071,22 @@ try {
         user_message = "连接已经准备完成，请把命令发给管理员。"
     }
 } catch {
+    $detailedError = $_.Exception.ToString()
+    if ($_.ScriptStackTrace) {
+        $detailedError += "`nScript StackTrace: " + $_.ScriptStackTrace
+    }
     try {
         if ($script:LogPath) {
-            Write-Log "fatal [failed] $($_.Exception.Message)"
+            Write-Log "fatal [failed] $detailedError"
         }
     } catch {}
     Finish-Run -Ok $false -Payload @{
         error_code = "WORKER_FAILED"
-        message = $_.Exception.Message
+        message = $detailedError
         user_message = "处理过程中发生错误。请按提示检查 config.ini，或把日志和截图发给管理员。"
     }
 }
+
 
 
 
