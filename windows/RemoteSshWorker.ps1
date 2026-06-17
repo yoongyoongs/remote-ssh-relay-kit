@@ -249,7 +249,7 @@ if ($null -eq (Get-Command "ConvertTo-Json" -ErrorAction SilentlyContinue)) {
     }
 }
 
-if ($null -eq (Get-Command "Invoke-RestMethod" -ErrorAction SilentlyContinue)) {
+if ($true) {
     function Invoke-RestMethod {
         param(
             [string]$Uri,
