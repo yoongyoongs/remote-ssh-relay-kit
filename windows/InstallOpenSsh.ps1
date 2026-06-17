@@ -111,3 +111,4 @@ try {
     Write-InstallLog ("OpenSSH 安装失败：{0}" -f (Resolve-FriendlyErrorMessage -Message $_.Exception.Message)) "ERROR"
     throw
 }
+

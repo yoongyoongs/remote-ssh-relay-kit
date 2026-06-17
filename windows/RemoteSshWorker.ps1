@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$ConfigPath,
     [string]$RuntimeRoot,
     [string]$SessionId,
@@ -1078,6 +1078,7 @@ try {
         user_message = "处理过程中发生错误。请按提示检查 config.ini，或把日志和截图发给管理员。"
     }
 }
+
 
 
 
