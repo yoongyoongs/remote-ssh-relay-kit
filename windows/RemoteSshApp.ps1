@@ -5,9 +5,13 @@
 $ErrorActionPreference = "Stop"
 
 # 1. 毫秒级轻量检测管理员权限，决定是否提前提示提权
-$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-$principal = New-Object Security.Principal.WindowsPrincipal($identity)
-$global:isParentAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+function Test-IsAdministrator {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+$global:isParentAdmin = Test-IsAdministrator
 
 if (-not $global:isParentAdmin) {
     Write-Host "正在请求管理员权限，请在随后的系统弹窗中选择 [是/允许]..." -ForegroundColor Yellow
@@ -605,7 +609,6 @@ try {
         "-SessionId", $sessionId
     )
 
-    $isParentAdmin = Test-IsAdministrator
     $startupLog = Join-Path $runtimeRoot "worker-startup.log"
     $startupOutLog = Join-Path $runtimeRoot "worker-startup.out.log"
     $workerProc = $null
@@ -759,4 +762,7 @@ try {
 Write-Host ""
 Write-Host "按 Enter 键关闭窗口。"
 [void][System.Console]::ReadLine()
+
+
+
 
