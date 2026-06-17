@@ -4,19 +4,16 @@
 
 $ErrorActionPreference = "Stop"
 
-if (-not $PSScriptRoot) {
-    $PSScriptRoot = Split-Path -Parent -Path $MyInvocation.MyCommand.Path
-}
-if (-not $PSCommandPath) {
-    $PSCommandPath = $MyInvocation.MyCommand.Path
-}
+# 1. 毫秒级轻量检测管理员权限，决定是否提前提示提权
+$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$principal = New-Object Security.Principal.WindowsPrincipal($identity)
+$global:isParentAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
-if ((($ConfigPath) -match "^\s*$")) {
-    $ConfigPath = Join-Path $PSScriptRoot "config.ini"
+if (-not $global:isParentAdmin) {
+    Write-Host "正在请求管理员权限，请在随后的系统弹窗中选择 [是/允许]..." -ForegroundColor Yellow
 }
 
-$ErrorActionPreference = "Stop"
-
+# 2. 进行 QuickEdit 禁用编译与调用（必须在 UAC 弹出前执行以防点击死锁）
 try {
     $typeDefinition = @"
     using System;
@@ -47,6 +44,17 @@ try {
     Add-Type -TypeDefinition $typeDefinition -ErrorAction SilentlyContinue
     [ConsoleHelper]::DisableQuickEdit()
 } catch {}
+
+if (-not $PSScriptRoot) {
+    $PSScriptRoot = Split-Path -Parent -Path $MyInvocation.MyCommand.Path
+}
+if (-not $PSCommandPath) {
+    $PSCommandPath = $MyInvocation.MyCommand.Path
+}
+
+if ((($ConfigPath) -match "^\s*$")) {
+    $ConfigPath = Join-Path $PSScriptRoot "config.ini"
+}
 
 function Get-ContentRaw {
     param([string]$Path)
@@ -629,14 +637,13 @@ $isParentAdmin = Test-IsAdministrator
 $startupLog = Join-Path $runtimeRoot "worker-startup.log"
 
 try {
-    if ($isParentAdmin) {
+    if ($global:isParentAdmin) {
         if ($showWorkerWindow) {
             Start-Process -FilePath "powershell.exe" -ArgumentList $workerArgs | Out-Null
         } else {
             Start-Process -FilePath "powershell.exe" -ArgumentList $workerArgs -WindowStyle Hidden -RedirectStandardError $startupLog | Out-Null
         }
     } else {
-        Write-Host "正在请求管理员权限，请在随后的系统弹窗中选择 [是/允许]..." -ForegroundColor Yellow
         if ($showWorkerWindow) {
             Start-Process -FilePath "powershell.exe" -ArgumentList $workerArgs -Verb RunAs | Out-Null
         } else {
@@ -644,7 +651,6 @@ try {
         }
     }
 } catch {
-    Write-Host "正在请求管理员权限，请在随后的系统弹窗中选择 [是/允许]..." -ForegroundColor Yellow
     Start-Process -FilePath "powershell.exe" -ArgumentList $workerArgs -Verb RunAs | Out-Null
 }
 
