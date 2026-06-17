@@ -124,12 +124,8 @@ function Convert-PSObjectToDictionary {
     }
 
     $typeStr = $InputObject.GetType().FullName
-    if ($typeStr) {
-        if (($typeStr.StartsWith("System.") -or $typeStr.StartsWith("Microsoft.")) -and 
-            $typeStr -ne "System.Management.Automation.PSCustomObject" -and 
-            -not $typeStr.StartsWith("System.Collections.")) {
-            return $InputObject.ToString()
-        }
+    if ($typeStr -ne "System.Management.Automation.PSCustomObject") {
+        return $InputObject.ToString()
     }
 
     $dict = @{}
@@ -766,6 +762,7 @@ try {
 Write-Host ""
 Write-Host "按 Enter 键关闭窗口。"
 [void][System.Console]::ReadLine()
+
 
 
 
