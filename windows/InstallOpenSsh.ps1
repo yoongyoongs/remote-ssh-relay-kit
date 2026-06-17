@@ -80,8 +80,169 @@ function Run-DismFallback {
     }
 }
 
+function Install-Win32OpenSSH-Fallback {
+    # 1. 强制启用 TLS 1.2，避免下载时握手失败
+    try {
+        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType](3072 -bor 768 -bor 192)
+    } catch {}
+
+    # 2. 判断系统架构 (64位 or 32位)
+    $is64 = [Environment]::Is64BitOperatingSystem
+    if ($null -eq $is64) {
+        $is64 = ($env:PROCESSOR_ARCHITECTURE -eq "AMD64") -or ($env:PROCESSOR_ARCHITEW6432 -eq "AMD64")
+    }
+
+    # 3. 准备下载链接
+    if ($is64) {
+        $zipUrl = "https://github.com/PowerShell/Win32-OpenSSH/releases/download/v8.9.0.0p1-Beta/OpenSSH-Win64.zip"
+        $mirrors = @(
+            "https://ghproxy.net/https://github.com/PowerShell/Win32-OpenSSH/releases/download/v8.9.0.0p1-Beta/OpenSSH-Win64.zip",
+            "https://kkgithub.com/PowerShell/Win32-OpenSSH/releases/download/v8.9.0.0p1-Beta/OpenSSH-Win64.zip"
+        )
+    } else {
+        $zipUrl = "https://github.com/PowerShell/Win32-OpenSSH/releases/download/v8.9.0.0p1-Beta/OpenSSH-Win32.zip"
+        $mirrors = @(
+            "https://ghproxy.net/https://github.com/PowerShell/Win32-OpenSSH/releases/download/v8.9.0.0p1-Beta/OpenSSH-Win32.zip",
+            "https://kkgithub.com/PowerShell/Win32-OpenSSH/releases/download/v8.9.0.0p1-Beta/OpenSSH-Win32.zip"
+        )
+    }
+
+    # 4. 执行下载
+    $tempZip = Join-Path $env:TEMP "OpenSSH.zip"
+    if (Test-Path -LiteralPath $tempZip) {
+        try { Remove-Item -LiteralPath $tempZip -Force } catch {}
+    }
+
+    $webClient = New-Object System.Net.WebClient
+    $webClient.Proxy = New-Object System.Net.WebProxy
+    $downloaded = $false
+    $urls = @()
+    foreach ($m in $mirrors) { $urls += $m }
+    $urls += $zipUrl
+
+    foreach ($url in $urls) {
+        Write-InstallLog "正在从链接下载 OpenSSH 压缩包: $url"
+        try {
+            $webClient.DownloadFile($url, $tempZip)
+            if (Test-Path -LiteralPath $tempZip) {
+                $downloaded = $true
+                Write-InstallLog "OpenSSH 压缩包下载成功。"
+                break
+            }
+        } catch {
+            Write-InstallLog "从该镜像下载失败: $($_.Exception.Message)" "WARN"
+        }
+    }
+
+    if (-not $downloaded) {
+        throw "所有下载链接均失败，请手工下载并配置 Win32-OpenSSH。"
+    }
+
+    # 5. 解压压缩包 (使用 Shell.Application)
+    $tempExtractDir = Join-Path $env:TEMP "OpenSSH_extracted"
+    if (Test-Path -LiteralPath $tempExtractDir) {
+        try { Remove-Item -LiteralPath $tempExtractDir -Recurse -Force } catch {}
+    }
+    New-Item -ItemType Directory -Force -Path $tempExtractDir | Out-Null
+
+    Write-InstallLog "正在解压 OpenSSH 压缩包..."
+    $shell = New-Object -ComObject Shell.Application
+    $zipFolder = $shell.NameSpace($tempZip)
+    $targetFolder = $shell.NameSpace($tempExtractDir)
+    if ($null -ne $zipFolder -and $null -ne $targetFolder) {
+        $targetFolder.CopyHere($zipFolder.Items(), 16)
+    } else {
+        throw "创建解压命名空间失败。"
+    }
+
+    # 等待解压完成
+    $attempts = 0
+    $targetFileFound = $false
+    while ($attempts -lt 40) {
+        $found = Get-ChildItem -Path $tempExtractDir -Filter "install-sshd.ps1" -Recurse
+        if ($found) {
+            $targetFileFound = $true
+            Start-Sleep -Seconds 3
+            break
+        }
+        Start-Sleep -Seconds 1
+        $attempts++
+    }
+    if (-not $targetFileFound) {
+        throw "解压超时，未在解压目录中找到 install-sshd.ps1。"
+    }
+
+    # 6. 定位解压出来的目录并复制到 Program Files
+    $extractedFolder = Join-Path $tempExtractDir "OpenSSH-Win64"
+    if (-not (Test-Path -LiteralPath $extractedFolder)) {
+        $extractedFolder = Join-Path $tempExtractDir "OpenSSH-Win32"
+    }
+    if (-not (Test-Path -LiteralPath $extractedFolder)) {
+        $installScript = Get-ChildItem -Path $tempExtractDir -Filter "install-sshd.ps1" -Recurse | Select-Object -First 1
+        if ($installScript) {
+            $extractedFolder = $installScript.Directory.FullName
+        }
+    }
+
+    if (-not (Test-Path -LiteralPath $extractedFolder)) {
+        throw "未能在解压内容中定位到有效的 OpenSSH 目录。"
+    }
+
+    $destDir = "C:\Program Files\OpenSSH"
+    if (-not (Test-Path -LiteralPath $destDir)) {
+        New-Item -ItemType Directory -Force -Path $destDir | Out-Null
+    }
+
+    Write-InstallLog "正在将 OpenSSH 文件复制到安装目录 $destDir..."
+    Copy-Item -Path (Join-Path $extractedFolder "*") -Destination $destDir -Force -Recurse
+
+    # 7. 运行安装脚本
+    Write-InstallLog "正在调用 install-sshd.ps1 脚本注册 OpenSSH 服务..."
+    $installScriptPath = Join-Path $destDir "install-sshd.ps1"
+    $installOutputLog = Join-Path $destDir "install-sshd-run.log"
+    
+    # 运行官方安装脚本并重定向输出
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installScriptPath > $installOutputLog 2>&1
+    
+    # 验证服务是否成功注册
+    $service = Get-Service -Name sshd -ErrorAction SilentlyContinue
+    if ($null -eq $service) {
+        $logDetails = Get-Content -LiteralPath $installOutputLog -Raw
+        throw "OpenSSH 官方安装脚本执行失败，无法注册 sshd 服务。详细日志：$logDetails"
+    }
+
+    Write-InstallLog "OpenSSH Server 服务安装成功！"
+
+    # 清理临时文件
+    try {
+        Remove-Item -LiteralPath $tempZip -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $tempExtractDir -Recurse -Force -ErrorAction SilentlyContinue
+    } catch {}
+}
+
 try {
     Write-InstallLog "OpenSSH 安装器已启动。"
+
+    # 检测操作系统版本，如果是 Win7/Win8 则使用备用下载安装流
+    $isWindows10OrLater = $true
+    try {
+        $os = Get-WmiObject Win32_OperatingSystem
+        $version = [version]$os.Version
+        if ($version.Major -lt 10) {
+            $isWindows10OrLater = $false
+        }
+    } catch {
+        if ($null -eq (Get-Command "Get-WindowsCapability" -ErrorAction SilentlyContinue)) {
+            $isWindows10OrLater = $false
+        }
+    }
+
+    if (-not $isWindows10OrLater) {
+        Write-InstallLog "检测到当前系统为 Windows 7/8 (低于 Windows 10)，启动 Win32-OpenSSH 自动下载与安装流程。" "WARN"
+        Install-Win32OpenSSH-Fallback
+        exit 0
+    }
+
     $state = Get-CapabilityState
     Write-InstallLog "当前 OpenSSH Server 组件状态：$state"
     if ($state -eq "Installed") {
@@ -92,6 +253,7 @@ try {
     Write-InstallLog "开始调用 Windows 可选功能安装 OpenSSH Server，这一步可能持续几分钟。"
     try {
         $result = Add-WindowsCapability -Online -Name $capabilityName -ErrorAction Stop
+
         Write-InstallLog ("安装命令返回状态：RestartNeeded={0}" -f $result.RestartNeeded)
     } catch {
         Write-InstallLog ("Add-WindowsCapability 执行失败：{0}" -f (Resolve-FriendlyErrorMessage -Message $_.Exception.Message)) "WARN"
