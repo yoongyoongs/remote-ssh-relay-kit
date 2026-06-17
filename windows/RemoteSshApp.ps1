@@ -1,8 +1,12 @@
-﻿param(
+param(
     [string]$ConfigPath = ""
 )
 
 $ErrorActionPreference = "Stop"
+
+try {
+    [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType](3072 -bor 768 -bor 192)
+} catch {}
 
 # 1. 毫秒级轻量检测管理员权限，决定是否提前提示提权
 function Test-IsAdministrator {
@@ -123,7 +127,21 @@ function Convert-PSObjectToDictionary {
         return $InputObject.Message
     }
 
-    # 釜底抽薪：除了白名单中允许的字典、集合、简单值和异常外，其他任何复杂类型一律禁止进行反射，直接降级返回为字符串，彻底断绝循环引用
+    if ($InputObject -is [System.Management.Automation.PSCustomObject]) {
+        try {
+            if ($null -ne $InputObject.PSObject -and $null -ne $InputObject.PSObject.Properties) {
+                $dict = @{}
+                foreach ($prop in $InputObject.PSObject.Properties) {
+                    if ($prop.MemberType -eq "NoteProperty") {
+                        $dict[$prop.Name] = Convert-PSObjectToDictionary -InputObject $prop.Value
+                    }
+                }
+                return $dict
+            }
+        } catch {}
+    }
+
+    # 釜底抽薪：除了白名单中允许的字典、集合、简单值、异常和自定义对象NoteProperty外，其他任何复杂类型一律禁止进行反射，直接降级返回为字符串，彻底断绝循环引用
     return $InputObject.ToString()
 }
 
@@ -177,11 +195,14 @@ if ($null -eq (Get-Command "Invoke-RestMethod" -ErrorAction SilentlyContinue)) {
             [string]$ContentType = "application/json",
             [string]$Body = ""
         )
+        try {
+            [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType](3072 -bor 768 -bor 192)
+        } catch {}
         $request = [System.Net.WebRequest]::Create($Uri)
         $request.Method = $Method
         $request.ContentType = $ContentType
         $request.Timeout = 15000
-        $request.Proxy = [System.Net.GlobalProxySelection]::GetEmptyWebProxy()
+        $request.Proxy = New-Object System.Net.WebProxy
         
         if ($Method -eq "Post" -and -not [string]::IsNullOrEmpty($Body)) {
             $bytes = [System.Text.Encoding]::UTF8.GetBytes($Body)
