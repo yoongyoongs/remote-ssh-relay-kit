@@ -6,6 +6,21 @@
 $ErrorActionPreference = "Stop"
 $capabilityName = "OpenSSH.Server~~~~0.0.1.0"
 
+# Fallback definition for $PSScriptRoot on PowerShell 2.0
+if ($null -eq $script:PSScriptRoot -or (($script:PSScriptRoot) -match "^\s*$")) {
+    if ($null -ne $PSScriptRoot -and -not (($PSScriptRoot) -match "^\s*$")) {
+        $script:PSScriptRoot = $PSScriptRoot
+    } else {
+        $script:PSScriptRoot = Split-Path -Parent -Path $MyInvocation.MyCommand.Definition
+    }
+}
+if ($null -eq $script:PSScriptRoot -or (($script:PSScriptRoot) -match "^\s*$")) {
+    $script:PSScriptRoot = Split-Path -Parent -Path $MyInvocation.MyCommand.Path
+}
+if ($null -eq $script:PSScriptRoot -or (($script:PSScriptRoot) -match "^\s*$")) {
+    $script:PSScriptRoot = [System.IO.Path]::GetFullPath((Get-Location))
+}
+
 function Resolve-FriendlyErrorMessage {
     param([string]$Message)
 
@@ -109,7 +124,7 @@ function Install-Win32OpenSSH-Fallback {
 
     # 4. 获取本地离线安装包路径
     $localZipName = if ($is64) { "OpenSSH-Win64.zip" } else { "OpenSSH-Win32.zip" }
-    $localZipPath = Join-Path (Join-Path $PSScriptRoot "dep") $localZipName
+    $localZipPath = Join-Path (Join-Path $script:PSScriptRoot "dep") $localZipName
     
     $tempZip = Join-Path $env:TEMP "OpenSSH.zip"
     if (Test-Path -LiteralPath $tempZip) {
