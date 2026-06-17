@@ -49,3 +49,13 @@
 
 - [工作状态文档](docs/05-工作状态文档.md)
 - [交接文档](docs/06-交接文档.md)
+
+## 2026-06-17 Windows 7 启动诊断增强
+
+针对 Windows 7 真机验证中出现的“主窗口一直停留在等待后台任务启动”问题，本次补充了启动阶段的兼容性与诊断能力：
+
+1. 修复 PowerShell 2.0 / .NET 3.5 环境下残留的 `PSCustomObject` 与 `TcpClient.ConnectAsync()` 兼容问题。
+2. 前台主程序新增后台执行器启动失败检测与 45 秒超时兜底，避免用户界面无限等待。
+3. 失败时会自动在桌面生成 `RemoteSshRelay-Diagnostics-会话ID.zip` 诊断包，并打开资源管理器选中该文件，用户只需把该文件发给管理员。
+4. Windows 默认配置已改为方案 B：API 接口直连公网 IP `106.13.171.166`，SSH 中继地址继续使用域名 `yoong-relay.ddnsgeek.com`。
+5. Windows 7 不支持通过 Windows 可选功能自动安装 OpenSSH Server；如系统没有 `sshd` 服务，需要先手工安装 Win32-OpenSSH 或使用已预装 SSH 服务的环境。

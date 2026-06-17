@@ -82,17 +82,18 @@ function Convert-DictionaryToPSObject {
     return $InputObject
 }
 
+function Test-IsJsonSimpleValue {
+    param($Value)
+    if ($null -eq $Value) { return $true }
+    if ($Value -is [string]) { return $true }
+    if ($Value -is [ValueType]) { return $true }
+    return $false
+}
+
 function Convert-PSObjectToDictionary {
     param($InputObject)
     if ($null -eq $InputObject) { return $null }
-    if ($InputObject -is [System.Management.Automation.PSCustomObject]) {
-        $dict = @{}
-        foreach ($prop in $InputObject.PSObject.Properties) {
-            $dict[$prop.Name] = Convert-PSObjectToDictionary -InputObject $prop.Value
-        }
-        return $dict
-    }
-    elseif ($InputObject -is [System.Collections.IDictionary]) {
+    if ($InputObject -is [System.Collections.IDictionary]) {
         $dict = @{}
         foreach ($key in $InputObject.Keys) {
             $dict[$key] = Convert-PSObjectToDictionary -InputObject $InputObject[$key]
@@ -105,6 +106,16 @@ function Convert-PSObjectToDictionary {
             $list.Add((Convert-PSObjectToDictionary -InputObject $item)) | Out-Null
         }
         return ,($list.ToArray())
+    }
+    elseif (-not (Test-IsJsonSimpleValue -Value $InputObject)) {
+        $props = @($InputObject.PSObject.Properties | Where-Object { $_.MemberType -eq "NoteProperty" -or $_.MemberType -eq "Property" })
+        if ($props.Count -gt 0) {
+            $dict = @{}
+            foreach ($prop in $props) {
+                $dict[$prop.Name] = Convert-PSObjectToDictionary -InputObject $prop.Value
+            }
+            return $dict
+        }
     }
     return $InputObject
 }
@@ -216,15 +227,16 @@ if ($null -eq (Get-Command "Test-NetConnection" -ErrorAction SilentlyContinue)) 
         $tcp = New-Object System.Net.Sockets.TcpClient
         $connected = $false
         try {
-            $connection = $tcp.ConnectAsync($ComputerName, $Port)
-            if ($connection.Wait(1500) -and $tcp.Connected) {
+            $asyncResult = $tcp.BeginConnect($ComputerName, $Port, $null, $null)
+            if ($asyncResult.AsyncWaitHandle.WaitOne(1500, $false) -and $tcp.Connected) {
+                $tcp.EndConnect($asyncResult)
                 $connected = $true
             }
         } catch {}
         finally {
             $tcp.Close()
         }
-        return [PSCustomObject]@{ TcpTestSucceeded = $connected }
+        return New-Object PSObject -Property @{ TcpTestSucceeded = $connected }
     }
 }
 
@@ -255,17 +267,18 @@ function Convert-DictionaryToPSObject {
     return $InputObject
 }
 
+function Test-IsJsonSimpleValue {
+    param($Value)
+    if ($null -eq $Value) { return $true }
+    if ($Value -is [string]) { return $true }
+    if ($Value -is [ValueType]) { return $true }
+    return $false
+}
+
 function Convert-PSObjectToDictionary {
     param($InputObject)
     if ($null -eq $InputObject) { return $null }
-    if ($InputObject -is [System.Management.Automation.PSCustomObject]) {
-        $dict = @{}
-        foreach ($prop in $InputObject.PSObject.Properties) {
-            $dict[$prop.Name] = Convert-PSObjectToDictionary -InputObject $prop.Value
-        }
-        return $dict
-    }
-    elseif ($InputObject -is [System.Collections.IDictionary]) {
+    if ($InputObject -is [System.Collections.IDictionary]) {
         $dict = @{}
         foreach ($key in $InputObject.Keys) {
             $dict[$key] = Convert-PSObjectToDictionary -InputObject $InputObject[$key]
@@ -278,6 +291,16 @@ function Convert-PSObjectToDictionary {
             $list.Add((Convert-PSObjectToDictionary -InputObject $item)) | Out-Null
         }
         return ,($list.ToArray())
+    }
+    elseif (-not (Test-IsJsonSimpleValue -Value $InputObject)) {
+        $props = @($InputObject.PSObject.Properties | Where-Object { $_.MemberType -eq "NoteProperty" -or $_.MemberType -eq "Property" })
+        if ($props.Count -gt 0) {
+            $dict = @{}
+            foreach ($prop in $props) {
+                $dict[$prop.Name] = Convert-PSObjectToDictionary -InputObject $prop.Value
+            }
+            return $dict
+        }
     }
     return $InputObject
 }
@@ -389,8 +412,9 @@ if ($null -eq (Get-Command "Test-NetConnection" -ErrorAction SilentlyContinue)) 
         $tcp = New-Object System.Net.Sockets.TcpClient
         $connected = $false
         try {
-            $connection = $tcp.ConnectAsync($ComputerName, $Port)
-            if ($connection.Wait(1500) -and $tcp.Connected) {
+            $asyncResult = $tcp.BeginConnect($ComputerName, $Port, $null, $null)
+            if ($asyncResult.AsyncWaitHandle.WaitOne(1500, $false) -and $tcp.Connected) {
+                $tcp.EndConnect($asyncResult)
                 $connected = $true
             }
         } catch {}
@@ -481,6 +505,108 @@ function Set-ClipboardText {
         try {
             $Text | clip
         } catch {}
+    }
+}
+
+function New-DiagnosticBundle {
+    param(
+        [string]$RuntimeRoot,
+        [string]$SessionId,
+        $Result
+    )
+
+    try {
+        $desktop = [Environment]::GetFolderPath("DesktopDirectory")
+        if ((($desktop) -match "^\s*$")) {
+            $desktop = Join-Path $env:USERPROFILE "Desktop"
+        }
+        if (-not (Test-Path -LiteralPath $desktop)) {
+            New-Item -ItemType Directory -Force -Path $desktop | Out-Null
+        }
+
+        $bundleName = "RemoteSshRelay-Diagnostics-$SessionId"
+        $bundleFolder = Join-Path $desktop $bundleName
+        if (Test-Path -LiteralPath $bundleFolder) {
+            Remove-Item -LiteralPath $bundleFolder -Recurse -Force
+        }
+        New-Item -ItemType Directory -Force -Path $bundleFolder | Out-Null
+
+        $summaryPath = Join-Path $bundleFolder "README.txt"
+        $summary = @(
+            "远程协助启动失败诊断包",
+            "会话 ID: $SessionId",
+            "生成时间: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')",
+            "",
+            "请把这个压缩包发给协助你的管理员。",
+            "",
+            "错误信息:",
+            "$($Result.message)",
+            "",
+            "原始日志目录:",
+            "$RuntimeRoot"
+        )
+        Set-Content -LiteralPath $summaryPath -Value $summary -Encoding utf8
+
+        $safeFileNames = @(
+            "status.json",
+            "result.json",
+            "worker.log",
+            "worker-startup.log",
+            "worker-startup.out.log",
+            "install-openssh.log",
+            "install-openssh-dism.stdout.log",
+            "install-openssh-dism.stderr.log",
+            "tunnel-keeper.log",
+            "tunnel-state.json",
+            "tunnel.stdout.log",
+            "tunnel.stderr.log",
+            "enroll-response.json",
+            "connection-settings.json"
+        )
+        foreach ($fileName in $safeFileNames) {
+            $sourcePath = Join-Path $RuntimeRoot $fileName
+            if (Test-Path -LiteralPath $sourcePath) {
+                Copy-Item -LiteralPath $sourcePath -Destination (Join-Path $bundleFolder $fileName) -Force
+            }
+        }
+        foreach ($path in @(Get-ChildItem -LiteralPath $RuntimeRoot -Filter "tunnel-run-*.log" -ErrorAction SilentlyContinue)) {
+            Copy-Item -LiteralPath $path.FullName -Destination (Join-Path $bundleFolder $path.Name) -Force
+        }
+
+        $zipPath = Join-Path $desktop ("$bundleName.zip")
+        if (Test-Path -LiteralPath $zipPath) {
+            Remove-Item -LiteralPath $zipPath -Force
+        }
+
+        try {
+            [byte[]]$emptyZip = @(80, 75, 5, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+            [System.IO.File]::WriteAllBytes($zipPath, $emptyZip)
+            $shell = New-Object -ComObject Shell.Application
+            $zipFolder = $shell.NameSpace($zipPath)
+            $sourceFolder = $shell.NameSpace($bundleFolder)
+            if ($null -ne $zipFolder -and $null -ne $sourceFolder) {
+                $items = $sourceFolder.Items()
+                $zipFolder.CopyHere($items, 16)
+                $deadline = (Get-Date).AddSeconds(12)
+                while ((Get-Date) -lt $deadline) {
+                    Start-Sleep -Milliseconds 300
+                    $zipFolder = $shell.NameSpace($zipPath)
+                    if ($null -ne $zipFolder -and $zipFolder.Items().Count -ge $items.Count) {
+                        break
+                    }
+                }
+                try { Remove-Item -LiteralPath $bundleFolder -Recurse -Force } catch {}
+                try { Start-Process -FilePath "explorer.exe" -ArgumentList ("/select,`"$zipPath`"") | Out-Null } catch {}
+                Set-ClipboardText -Text $zipPath
+                return $zipPath
+            }
+        } catch {}
+
+        try { Start-Process -FilePath "explorer.exe" -ArgumentList "`"$bundleFolder`"" | Out-Null } catch {}
+        Set-ClipboardText -Text $bundleFolder
+        return $bundleFolder
+    } catch {
+        return ""
     }
 }
 
@@ -635,13 +761,16 @@ function Test-IsAdministrator {
 
 $isParentAdmin = Test-IsAdministrator
 $startupLog = Join-Path $runtimeRoot "worker-startup.log"
+$startupOutLog = Join-Path $runtimeRoot "worker-startup.out.log"
+$workerProc = $null
+$workerStartTime = Get-Date
 
 try {
     if ($global:isParentAdmin) {
         if ($showWorkerWindow) {
-            Start-Process -FilePath "powershell.exe" -ArgumentList $workerArgs | Out-Null
+            $workerProc = Start-Process -FilePath "powershell.exe" -ArgumentList $workerArgs -PassThru
         } else {
-            Start-Process -FilePath "powershell.exe" -ArgumentList $workerArgs -WindowStyle Hidden -RedirectStandardError $startupLog | Out-Null
+            $workerProc = Start-Process -FilePath "powershell.exe" -ArgumentList $workerArgs -WindowStyle Hidden -RedirectStandardOutput $startupOutLog -RedirectStandardError $startupLog -PassThru
         }
     } else {
         if ($showWorkerWindow) {
@@ -654,9 +783,40 @@ try {
     Start-Process -FilePath "powershell.exe" -ArgumentList $workerArgs -Verb RunAs | Out-Null
 }
 
+function Write-StartupFailureResult {
+    param([string]$Message)
+    if (Test-Path -LiteralPath $resultPath) {
+        return
+    }
+    $payload = @{
+        ok = $false
+        error_code = "WORKER_START_FAILED"
+        message = $Message
+        user_message = "后台任务没有正常启动。请把日志目录截图或打包发给管理员。"
+        runtime_root = $runtimeRoot
+    }
+    $payload | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $resultPath -Encoding utf8
+}
+
 while ($true) {
     Start-Sleep -Milliseconds 600
     $status = Read-JsonFile -Path $statusPath
+
+    if ($null -eq $status) {
+        if ($null -ne $workerProc) {
+            try {
+                $workerProc.Refresh()
+                if ($workerProc.HasExited) {
+                    Write-StartupFailureResult -Message ("后台任务启动后立即退出，退出码：{0}。请查看 worker-startup.log / worker-startup.out.log。" -f $workerProc.ExitCode)
+                }
+            } catch {}
+        }
+
+        $elapsedSeconds = ((Get-Date) - $workerStartTime).TotalSeconds
+        if ($elapsedSeconds -gt 45) {
+            Write-StartupFailureResult -Message "等待后台任务启动超过 45 秒，未看到状态文件。可能是 UAC 未确认、PowerShell 兼容错误，或启动器被杀毒软件拦截。"
+        }
+    }
     
     # Increment spinner tick
     $global:spinnerIndex = ($global:spinnerIndex + 1) % $global:spinnerFrames.Count
@@ -679,6 +839,12 @@ while ($true) {
     }
 
     $detailLogPath = if ($null -ne $status -and $status.detail_log_path) { $status.detail_log_path } else { Join-Path $runtimeRoot "worker.log" }
+    if (($null -eq $status) -and -not (Test-Path -LiteralPath $detailLogPath) -and (Test-Path -LiteralPath $startupLog)) {
+        $detailLogPath = $startupLog
+    }
+    if (($null -eq $status) -and -not (Test-Path -LiteralPath $detailLogPath) -and (Test-Path -LiteralPath $startupOutLog)) {
+        $detailLogPath = $startupOutLog
+    }
     $detailLines = Get-RecentLogLines -Path $detailLogPath -LineCount 8
     
     Write-ConsoleLine ""
@@ -708,14 +874,19 @@ while ($true) {
             Write-ConsoleLine "    $($result.connect_command)" -ForegroundColor Cyan
             Write-ConsoleLine "========================================================================" -ForegroundColor Green
         } else {
+            $diagnosticPath = New-DiagnosticBundle -RuntimeRoot $runtimeRoot -SessionId $sessionId -Result $result
             Write-ConsoleLine "========================================================================" -ForegroundColor Red
             Write-ConsoleLine " ❌ 配置失败" -ForegroundColor Red
             Write-ConsoleLine "========================================================================" -ForegroundColor Red
-            if ($result.user_message) {
+            if ((($diagnosticPath) -match "\S")) {
+                Write-ConsoleLine " 已在桌面生成诊断包，并自动打开了所在位置。" -ForegroundColor Yellow
+                Write-ConsoleLine " 请把下面这个文件发给管理员：" -ForegroundColor Yellow
+                Write-ConsoleLine " $diagnosticPath" -ForegroundColor Cyan
+                Write-ConsoleLine " 文件路径也已经复制到剪贴板。" -ForegroundColor Yellow
+            } elseif ($result.user_message) {
                 Write-ConsoleLine " $($result.user_message)" -ForegroundColor Yellow
             }
             Write-ConsoleLine " 错误信息: $($result.message)" -ForegroundColor DarkGray
-            Write-ConsoleLine " 日志路径: $runtimeRoot" -ForegroundColor DarkGray
             Write-ConsoleLine "========================================================================" -ForegroundColor Red
         }
         Clear-RemainingLines
@@ -728,6 +899,3 @@ while ($true) {
 Write-Host ""
 Write-Host "按 Enter 键关闭窗口。"
 [void][System.Console]::ReadLine()
-
-
-

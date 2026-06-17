@@ -171,9 +171,17 @@ FORCE_INSTALL_OPENSSH_IN_DRY_RUN=true
 
 ### 10.3 最终失败了
 
-主窗口会提示失败，并建议把日志或截图发给管理员。
+主窗口会提示失败，并自动在桌面生成一个诊断包：
 
-日志位置默认在：
+```text
+RemoteSshRelay-Diagnostics-会话ID.zip
+```
+
+程序会自动打开资源管理器并选中这个文件，同时把文件路径复制到剪贴板。目标用户不需要自己查找日志，只需要把这个 zip 文件发给管理员。
+
+如果当前系统无法创建 zip 文件，程序会退化为在桌面生成同名诊断文件夹，并自动打开该文件夹。
+
+管理员如需手工排查，原始日志位置仍然默认在：
 
 ```text
 %LOCALAPPDATA%\RemoteSshRelay\runtime\
@@ -204,8 +212,12 @@ FORCE_INSTALL_OPENSSH_IN_DRY_RUN=true
 
 * **JSON 解析与序列化模拟**：在不依赖 PowerShell 3.0+ 自带的 `ConvertFrom-Json` 和 `ConvertTo-Json` 的情况下，本程序利用了老系统自带的 .NET `JavaScriptSerializer` 重构了对应的 Mock 函数，自动处理服务端 API 的 JSON 数据交互。
 * **网络请求兼容**：由于老版本没有 `Invoke-RestMethod` 模块，程序底层自动回退到 .NET `[System.Net.WebRequest]` 建立 HTTP 握手，确保顺利进行设备注册和端口绑定。
-* **网络连通性模拟**：Windows 7 缺失 `Test-NetConnection` 指令，程序底层通过 .NET `[System.Net.Sockets.TcpClient]` 的连接方法对 `22` 端口建立套接字并反馈结果。
+* **网络连通性模拟**：Windows 7 缺失 `Test-NetConnection` 指令，程序底层通过 .NET `[System.Net.Sockets.TcpClient]` 的 `BeginConnect`/`EndConnect` 方法对 `22` 端口建立套接字并反馈结果，避免依赖 .NET 4.5 才支持的 `ConnectAsync()`。
 * **.NET 框架兼容**：移除了所有仅在 .NET 4.0+ 支持的 `[string]::IsNullOrWhiteSpace()` 校验，替换为底层的正则表达式匹配。
 * **操作符兼容**：移除了 PowerShell 3.0 引入的 `-in` 与 `-notin` 操作符，全部重构为低版本支持的 `-contains` 与 `-notcontains`。
 * **启动路径兜底**：增加了当 `$PSScriptRoot` 未定义时的自动定位兜底机制。
+* **启动失败兜底**：如果后台执行器未能写出状态文件，主窗口会在 45 秒后给出失败结果，并自动生成桌面诊断包，避免卡在“正在等待后台任务启动”。
+* **自动诊断打包**：失败时会收集 `status.json`、`result.json`、`worker.log`、`worker-startup.log`、`install-openssh.log`、隧道日志等文件，打包为 `RemoteSshRelay-Diagnostics-会话ID.zip`。
 
+> [!IMPORTANT]
+> Windows 7 不支持通过 Windows 10/11 的 Windows 可选功能机制自动安装 `OpenSSH Server`。如果目标机器没有 `sshd` 服务，本工具会给出明确错误提示；需要先手工安装 Win32-OpenSSH，或改用已预装 SSH 服务的 Windows 环境。

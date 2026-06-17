@@ -28,17 +28,18 @@ function Convert-DictionaryToPSObject {
     return $InputObject
 }
 
+function Test-IsJsonSimpleValue {
+    param($Value)
+    if ($null -eq $Value) { return $true }
+    if ($Value -is [string]) { return $true }
+    if ($Value -is [ValueType]) { return $true }
+    return $false
+}
+
 function Convert-PSObjectToDictionary {
     param($InputObject)
     if ($null -eq $InputObject) { return $null }
-    if ($InputObject -is [System.Management.Automation.PSCustomObject]) {
-        $dict = @{}
-        foreach ($prop in $InputObject.PSObject.Properties) {
-            $dict[$prop.Name] = Convert-PSObjectToDictionary -InputObject $prop.Value
-        }
-        return $dict
-    }
-    elseif ($InputObject -is [System.Collections.IDictionary]) {
+    if ($InputObject -is [System.Collections.IDictionary]) {
         $dict = @{}
         foreach ($key in $InputObject.Keys) {
             $dict[$key] = Convert-PSObjectToDictionary -InputObject $InputObject[$key]
@@ -51,6 +52,16 @@ function Convert-PSObjectToDictionary {
             $list.Add((Convert-PSObjectToDictionary -InputObject $item)) | Out-Null
         }
         return ,($list.ToArray())
+    }
+    elseif (-not (Test-IsJsonSimpleValue -Value $InputObject)) {
+        $props = @($InputObject.PSObject.Properties | Where-Object { $_.MemberType -eq "NoteProperty" -or $_.MemberType -eq "Property" })
+        if ($props.Count -gt 0) {
+            $dict = @{}
+            foreach ($prop in $props) {
+                $dict[$prop.Name] = Convert-PSObjectToDictionary -InputObject $prop.Value
+            }
+            return $dict
+        }
     }
     return $InputObject
 }
@@ -162,8 +173,9 @@ if ($null -eq (Get-Command "Test-NetConnection" -ErrorAction SilentlyContinue)) 
         $tcp = New-Object System.Net.Sockets.TcpClient
         $connected = $false
         try {
-            $connection = $tcp.ConnectAsync($ComputerName, $Port)
-            if ($connection.Wait(1500) -and $tcp.Connected) {
+            $asyncResult = $tcp.BeginConnect($ComputerName, $Port, $null, $null)
+            if ($asyncResult.AsyncWaitHandle.WaitOne(1500, $false) -and $tcp.Connected) {
+                $tcp.EndConnect($asyncResult)
                 $connected = $true
             }
         } catch {}

@@ -34,6 +34,9 @@ function Write-InstallLog {
 }
 
 function Get-CapabilityState {
+    if ($null -eq (Get-Command "Get-WindowsCapability" -ErrorAction SilentlyContinue)) {
+        throw "当前系统不支持通过 Windows 可选功能自动安装 OpenSSH Server。Windows 7 通常需要先手工安装 Win32-OpenSSH，并确认 sshd 服务存在后再运行本工具。"
+    }
     $capability = Get-WindowsCapability -Online -Name $capabilityName -ErrorAction Stop
     return $capability.State
 }
@@ -54,6 +57,9 @@ function Run-DismFallback {
         "/CapabilityName:$capabilityName",
         "/NoRestart"
     )
+    if ($null -eq (Get-Command "dism.exe" -ErrorAction SilentlyContinue)) {
+        throw "当前系统找不到 DISM.exe，无法自动安装 OpenSSH Server。"
+    }
     $proc = Start-Process -FilePath "dism.exe" -ArgumentList $args -PassThru -Wait -WindowStyle Hidden -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
     if (Test-Path -LiteralPath $stdoutPath) {
         foreach ($line in Get-Content -LiteralPath $stdoutPath) {
@@ -105,4 +111,3 @@ try {
     Write-InstallLog ("OpenSSH 安装失败：{0}" -f (Resolve-FriendlyErrorMessage -Message $_.Exception.Message)) "ERROR"
     throw
 }
-
