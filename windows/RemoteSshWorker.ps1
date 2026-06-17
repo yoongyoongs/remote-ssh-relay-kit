@@ -324,9 +324,23 @@ function Finish-Run {
         [hashtable]$Payload
     )
     $script:Status.overall_status = if ($Ok) { "success" } else { "failed" }
-    Save-Status
+    try {
+        Save-Status
+    } catch {}
+    
     $Payload["ok"] = $Ok
-    $Payload | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $script:ResultPath -Encoding utf8
+    try {
+        $Payload | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $script:ResultPath -Encoding utf8
+    } catch {
+        # 如果序列化失败，使用硬编码的 JSON 字符串作为最终保底，防止进程无声崩溃并让主程序在1秒内检测到
+        $msg = if ($Payload.ContainsKey("message")) { $Payload["message"] } else { $_.Exception.Message }
+        $userMsg = if ($Payload.ContainsKey("user_message")) { $Payload["user_message"] } else { "后台任务没有正常启动。" }
+        $escapedMsg = $msg -replace '"', '\\"' -replace "\r?\n", " "
+        $escapedUserMsg = $userMsg -replace '"', '\\"' -replace "\r?\n", " "
+        $okText = if ($Ok) { "true" } else { "false" }
+        $rawJson = '{"ok":' + $okText + ',"error_code":"WORKER_FAILED","message":"' + $escapedMsg + '","user_message":"' + $escapedUserMsg + '"}'
+        [System.IO.File]::WriteAllText($script:ResultPath, $rawJson, [System.Text.Encoding]::UTF8)
+    }
     exit
 }
 
@@ -1047,6 +1061,7 @@ try {
         user_message = "处理过程中发生错误。请按提示检查 config.ini，或把日志和截图发给管理员。"
     }
 }
+
 
 
 

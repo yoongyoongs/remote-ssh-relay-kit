@@ -638,8 +638,8 @@ try {
             }
 
             $elapsedSeconds = ((Get-Date) - $workerStartTime).TotalSeconds
-            if ($elapsedSeconds -gt 45) {
-                Write-StartupFailureResult -Message "等待后台任务启动超过 45 秒，未看到状态文件。可能是 UAC 未确认、PowerShell 兼容错误，或启动器被杀毒软件拦截。"
+            if ($elapsedSeconds -gt 15) {
+                Write-StartupFailureResult -Message "等待后台任务启动超过 15 秒，未看到状态文件。可能是 UAC 未确认、PowerShell 兼容错误，或启动器被杀毒软件拦截。"
             }
         }
         
@@ -731,6 +731,7 @@ try {
 Write-Host ""
 Write-Host "按 Enter 键关闭窗口。"
 [void][System.Console]::ReadLine()
+
 
 
 
