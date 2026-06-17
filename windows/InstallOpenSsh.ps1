@@ -107,35 +107,57 @@ function Install-Win32OpenSSH-Fallback {
         )
     }
 
-    # 4. 执行下载
+    # 4. 获取本地离线安装包路径
+    $localZipName = if ($is64) { "OpenSSH-Win64.zip" } else { "OpenSSH-Win32.zip" }
+    $localZipPath = Join-Path (Join-Path $PSScriptRoot "dep") $localZipName
+    
     $tempZip = Join-Path $env:TEMP "OpenSSH.zip"
     if (Test-Path -LiteralPath $tempZip) {
         try { Remove-Item -LiteralPath $tempZip -Force } catch {}
     }
 
-    $webClient = New-Object System.Net.WebClient
-    $webClient.Proxy = New-Object System.Net.WebProxy
     $downloaded = $false
-    $urls = @()
-    foreach ($m in $mirrors) { $urls += $m }
-    $urls += $zipUrl
-
-    foreach ($url in $urls) {
-        Write-InstallLog "正在从链接下载 OpenSSH 压缩包: $url"
+    
+    # 优先使用本地离线包
+    if (Test-Path -LiteralPath $localZipPath) {
+        Write-InstallLog "检测到本地内置的离线安装包：$localZipPath，将直接使用进行离线安装。"
         try {
-            $webClient.DownloadFile($url, $tempZip)
+            Copy-Item -LiteralPath $localZipPath -Destination $tempZip -Force
             if (Test-Path -LiteralPath $tempZip) {
                 $downloaded = $true
-                Write-InstallLog "OpenSSH 压缩包下载成功。"
-                break
+                Write-InstallLog "离线安装包加载成功。"
             }
         } catch {
-            Write-InstallLog "从该镜像下载失败: $($_.Exception.Message)" "WARN"
+            Write-InstallLog "复制本地安装包失败：$($_.Exception.Message)" "WARN"
+        }
+    }
+
+    # 如果没有本地包，则通过网络下载
+    if (-not $downloaded) {
+        Write-InstallLog "未找到本地离线包或加载失败，开始尝试在线下载..."
+        $webClient = New-Object System.Net.WebClient
+        $webClient.Proxy = New-Object System.Net.WebProxy
+        $urls = @()
+        foreach ($m in $mirrors) { $urls += $m }
+        $urls += $zipUrl
+
+        foreach ($url in $urls) {
+            Write-InstallLog "正在从链接下载 OpenSSH 压缩包: $url"
+            try {
+                $webClient.DownloadFile($url, $tempZip)
+                if (Test-Path -LiteralPath $tempZip) {
+                    $downloaded = $true
+                    Write-InstallLog "OpenSSH 压缩包下载成功。"
+                    break
+                }
+            } catch {
+                Write-InstallLog "从该镜像下载失败: $($_.Exception.Message)" "WARN"
+            }
         }
     }
 
     if (-not $downloaded) {
-        throw "所有下载链接均失败，请手工下载并配置 Win32-OpenSSH。"
+        throw "无法获取 OpenSSH 安装包（本地加载与在线下载均失败）。请手动下载并配置 Win32-OpenSSH。"
     }
 
     # 5. 解压压缩包 (使用 Shell.Application)
