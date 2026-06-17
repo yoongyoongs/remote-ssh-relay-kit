@@ -257,6 +257,49 @@ function Read-IniFile {
     return $map
 }
 
+function Get-OpenSshExecutablePath {
+    param([string]$Name)
+    try {
+        $sshdService = Get-WmiObject -Query "Select ImagePath from Win32_Service where Name='sshd'" -ErrorAction SilentlyContinue
+        if ($sshdService -and $sshdService.ImagePath) {
+            $rawPath = $sshdService.ImagePath.Trim().Trim('"')
+            if ($rawPath -match "^([^\s]+.exe)") {
+                $rawPath = $matches[1]
+            }
+            if (Test-Path -LiteralPath $rawPath) {
+                $dir = Split-Path -Parent -Path $rawPath
+                $targetExe = Join-Path $dir $Name
+                if (Test-Path -LiteralPath $targetExe) {
+                    return $targetExe
+                }
+            }
+        }
+    } catch {}
+
+    $commonDirs = @(
+        (Join-Path $env:SystemRoot "System32\OpenSSH"),
+        "C:\Program Files\OpenSSH",
+        "C:\Program Files\OpenSSH-Win64",
+        "C:\Program Files\OpenSSH-Win32",
+        "C:\Program Files (x86)\OpenSSH",
+        "C:\Program Files (x86)\OpenSSH-Win64",
+        "C:\Program Files (x86)\OpenSSH-Win32"
+    )
+    foreach ($dir in $commonDirs) {
+        $targetExe = Join-Path $dir $Name
+        if (Test-Path -LiteralPath $targetExe) {
+            return $targetExe
+        }
+    }
+
+    $cmd = Get-Command -Name $Name -ErrorAction SilentlyContinue
+    if ($null -ne $cmd) {
+        return $cmd.Definition
+    }
+
+    return $Name
+}
+
 function Get-ConfigValue {
     param(
         [hashtable]$Config,
@@ -626,47 +669,52 @@ function Ensure-FirewallRule {
             return
         }
 
-        # 检查是否支持 Windows 8+ 防火墙 Cmdlets，如果不支持（Win7），使用 netsh 兼容写入
-        $hasNetSecurity = $null -ne (Get-Command "Get-NetFirewallRule" -ErrorAction SilentlyContinue)
-        if ($hasNetSecurity) {
-            Write-Log "info [firewall] checking net-firewall rule for RemoteSshRelay-OpenSSH..."
-            $rule = Get-NetFirewallRule -Name "RemoteSshRelay-OpenSSH" -ErrorAction SilentlyContinue
-            if ($null -eq $rule) {
-                Write-Log "info [firewall] rule not found, creating rule RemoteSshRelay-OpenSSH allowing inbound port 22..."
-                New-NetFirewallRule `
-                    -Name "RemoteSshRelay-OpenSSH" `
-                    -DisplayName "Remote SSH Relay - OpenSSH" `
-                    -Direction Inbound `
-                    -Protocol TCP `
-                    -LocalPort 22 `
-                    -Action Allow | Out-Null
-                Set-StepState -Id "configure_firewall" -State "success" -Message "已创建防火墙规则。"
-                Write-Log "info [firewall] firewall rule created successfully."
-            } else {
-                Write-Log "info [firewall] firewall rule RemoteSshRelay-OpenSSH already exists."
-                Set-StepState -Id "configure_firewall" -State "skipped" -Message "防火墙规则已存在。"
-            }
-        } else {
-            Write-Log "info [firewall] NetSecurity cmdlets are unavailable (Win7). Using netsh fallback..."
-            # 使用 netsh 查询规则
-            $netshCheck = cmd.exe /c "netsh advfirewall firewall show rule name=`"RemoteSshRelay-OpenSSH`""
-            $ruleExists = $false
-            if ($LASTEXITCODE -eq 0 -and $netshCheck -match "RemoteSshRelay-OpenSSH") {
-                $ruleExists = $true
-            }
-
-            if (-not $ruleExists) {
-                Write-Log "info [firewall] creating firewall rule via netsh for port 22..."
-                cmd.exe /c "netsh advfirewall firewall add rule name=`"RemoteSshRelay-OpenSSH`" dir=in action=allow protocol=TCP localport=22"
-                if ($LASTEXITCODE -ne 0) {
-                    throw "通过 netsh 添加防火墙规则失败。"
+        try {
+            # 检查是否支持 Windows 8+ 防火墙 Cmdlets，如果不支持（Win7），使用 netsh 兼容写入
+            $hasNetSecurity = $null -ne (Get-Command "Get-NetFirewallRule" -ErrorAction SilentlyContinue)
+            if ($hasNetSecurity) {
+                Write-Log "info [firewall] checking net-firewall rule for RemoteSshRelay-OpenSSH..."
+                $rule = Get-NetFirewallRule -Name "RemoteSshRelay-OpenSSH" -ErrorAction SilentlyContinue
+                if ($null -eq $rule) {
+                    Write-Log "info [firewall] rule not found, creating rule RemoteSshRelay-OpenSSH allowing inbound port 22..."
+                    New-NetFirewallRule `
+                        -Name "RemoteSshRelay-OpenSSH" `
+                        -DisplayName "Remote SSH Relay - OpenSSH" `
+                        -Direction Inbound `
+                        -Protocol TCP `
+                        -LocalPort 22 `
+                        -Action Allow | Out-Null
+                    Set-StepState -Id "configure_firewall" -State "success" -Message "已创建防火墙规则。"
+                    Write-Log "info [firewall] firewall rule created successfully."
+                } else {
+                    Write-Log "info [firewall] firewall rule RemoteSshRelay-OpenSSH already exists."
+                    Set-StepState -Id "configure_firewall" -State "skipped" -Message "防火墙规则已存在。"
                 }
-                Set-StepState -Id "configure_firewall" -State "success" -Message "已创建防火墙规则 (netsh)。"
-                Write-Log "info [firewall] firewall rule created successfully via netsh."
             } else {
-                Write-Log "info [firewall] firewall rule RemoteSshRelay-OpenSSH already exists (netsh check)."
-                Set-StepState -Id "configure_firewall" -State "skipped" -Message "防火墙规则已存在。"
+                Write-Log "info [firewall] NetSecurity cmdlets are unavailable (Win7). Using netsh fallback..."
+                # 使用 netsh 查询规则
+                $netshCheck = cmd.exe /c "netsh advfirewall firewall show rule name=`"RemoteSshRelay-OpenSSH`""
+                $ruleExists = $false
+                if ($LASTEXITCODE -eq 0 -and $netshCheck -match "RemoteSshRelay-OpenSSH") {
+                    $ruleExists = $true
+                }
+
+                if (-not $ruleExists) {
+                    Write-Log "info [firewall] creating firewall rule via netsh for port 22..."
+                    cmd.exe /c "netsh advfirewall firewall add rule name=`"RemoteSshRelay-OpenSSH`" dir=in action=allow protocol=TCP localport=22"
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "通过 netsh 添加防火墙规则失败。"
+                    }
+                    Set-StepState -Id "configure_firewall" -State "success" -Message "已创建防火墙规则 (netsh)。"
+                    Write-Log "info [firewall] firewall rule created successfully via netsh."
+                } else {
+                    Write-Log "info [firewall] firewall rule RemoteSshRelay-OpenSSH already exists (netsh check)."
+                    Set-StepState -Id "configure_firewall" -State "skipped" -Message "防火墙规则已存在。"
+                }
             }
+        } catch {
+            Write-Log "warning [firewall] 无法配置系统防火墙规则，原因：$($_.Exception.Message)。这通常是因为系统防火墙服务已被禁用，程序将继续运行。"
+            Set-StepState -Id "configure_firewall" -State "success" -Message "防火墙未开启或跳过配置（不影响后续操作）。"
         }
     }
 }
@@ -710,8 +758,8 @@ function Ensure-DeviceKey {
                 Set-Content -LiteralPath $keyPath -Value "dry-run-private-key" -Encoding ascii
                 Set-Content -LiteralPath ($keyPath + ".pub") -Value "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDryRunDeviceKey remote-ssh-relay" -Encoding ascii
             } else {
-                $cmd = 'ssh-keygen.exe -q -t ed25519 -N "" -f "{0}"' -f $keyPath
-                cmd /c $cmd | Out-Null
+                $keygenExe = Get-OpenSshExecutablePath -Name "ssh-keygen.exe"
+                & $keygenExe -q -t ed25519 -N "" -f $keyPath | Out-Null
                 if ($LASTEXITCODE -ne 0) {
                     throw "生成设备密钥时 ssh-keygen 执行失败。"
                 }
@@ -1015,7 +1063,8 @@ function Run-TunnelKeeperMode {
         Write-KeeperLog ("准备建立反向隧道，目标端口 {0} -> {1}:{2}" -f $RemotePort, $LocalHost, $LocalPort)
         Save-KeeperState -Status "connecting" -Message "正在建立反向 SSH 隧道。"
 
-        $proc = Start-Process -FilePath "ssh.exe" -ArgumentList $sshArgs -PassThru -WindowStyle Hidden -RedirectStandardOutput $runStdoutPath -RedirectStandardError $runStderrPath
+        $sshExe = Get-OpenSshExecutablePath -Name "ssh.exe"
+        $proc = Start-Process -FilePath $sshExe -ArgumentList $sshArgs -PassThru -WindowStyle Hidden -RedirectStandardOutput $runStdoutPath -RedirectStandardError $runStderrPath
         Start-Sleep -Seconds 3
         $proc.Refresh()
 
