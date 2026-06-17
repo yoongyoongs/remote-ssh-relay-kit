@@ -106,8 +106,34 @@ function Install-Win32OpenSSH-Fallback {
     if ($null -eq $is64) {
         $is64 = ($env:PROCESSOR_ARCHITECTURE -eq "AMD64") -or ($env:PROCESSOR_ARCHITEW6432 -eq "AMD64")
     }
+    $archText = if ($is64) { "64位 (x64)" } else { "32位 (x86)" }
+    Write-InstallLog "系统架构检测：$archText"
 
-    # 3. 准备下载链接
+    # 3. 停止已有的 sshd 和 ssh-agent 服务，避免文件被占用导致复制失败
+    try {
+        $existingSshd = Get-Service -Name sshd -ErrorAction SilentlyContinue
+        if ($null -ne $existingSshd) {
+            Write-InstallLog "检测到系统已注册 sshd 服务。当前状态: $($existingSshd.Status)。"
+            if ($existingSshd.Status -eq "Running") {
+                Write-InstallLog "正在停止 sshd 服务以解除文件占用..."
+                Stop-Service -Name sshd -Force -ErrorAction SilentlyContinue
+                Start-Sleep -Seconds 2
+            }
+        }
+        $existingAgent = Get-Service -Name ssh-agent -ErrorAction SilentlyContinue
+        if ($null -ne $existingAgent) {
+            Write-InstallLog "检测到系统已注册 ssh-agent 服务。当前状态: $($existingAgent.Status)。"
+            if ($existingAgent.Status -eq "Running") {
+                Write-InstallLog "正在停止 ssh-agent 服务以解除文件占用..."
+                Stop-Service -Name ssh-agent -Force -ErrorAction SilentlyContinue
+                Start-Sleep -Seconds 2
+            }
+        }
+    } catch {
+        Write-InstallLog "停止已有服务时发生警告：$($_.Exception.Message)" "WARN"
+    }
+
+    # 4. 准备下载链接
     if ($is64) {
         $zipUrl = "https://github.com/PowerShell/Win32-OpenSSH/releases/download/v8.9.0.0p1-Beta/OpenSSH-Win64.zip"
         $mirrors = @(
@@ -122,7 +148,7 @@ function Install-Win32OpenSSH-Fallback {
         )
     }
 
-    # 4. 获取本地离线安装包路径
+    # 5. 获取本地离线安装包路径
     $localZipName = if ($is64) { "OpenSSH-Win64.zip" } else { "OpenSSH-Win32.zip" }
     $localZipPath = Join-Path (Join-Path $script:PSScriptRoot "dep") $localZipName
     
@@ -140,7 +166,7 @@ function Install-Win32OpenSSH-Fallback {
             Copy-Item -LiteralPath $localZipPath -Destination $tempZip -Force
             if (Test-Path -LiteralPath $tempZip) {
                 $downloaded = $true
-                Write-InstallLog "离线安装包加载成功。"
+                Write-InstallLog "离线安装包成功加载并复制到临时目录。"
             }
         } catch {
             Write-InstallLog "复制本地安装包失败：$($_.Exception.Message)" "WARN"
@@ -157,32 +183,32 @@ function Install-Win32OpenSSH-Fallback {
         $urls += $zipUrl
 
         foreach ($url in $urls) {
-            Write-InstallLog "正在从链接下载 OpenSSH 压缩包: $url"
+            Write-InstallLog "正在从下载源拉取包: $url"
             try {
                 $webClient.DownloadFile($url, $tempZip)
                 if (Test-Path -LiteralPath $tempZip) {
                     $downloaded = $true
-                    Write-InstallLog "OpenSSH 压缩包下载成功。"
+                    Write-InstallLog "包下载成功。"
                     break
                 }
             } catch {
-                Write-InstallLog "从该镜像下载失败: $($_.Exception.Message)" "WARN"
+                Write-InstallLog "连接该源失败: $($_.Exception.Message)" "WARN"
             }
         }
     }
 
     if (-not $downloaded) {
-        throw "无法获取 OpenSSH 安装包（本地加载与在线下载均失败）。请手动下载并配置 Win32-OpenSSH。"
+        throw "无法获取 OpenSSH 安装包（本地加载与所有在线下载源均失败）。"
     }
 
-    # 5. 解压压缩包 (使用 Shell.Application)
+    # 6. 解压压缩包 (使用 Shell.Application)
     $tempExtractDir = Join-Path $env:TEMP "OpenSSH_extracted"
     if (Test-Path -LiteralPath $tempExtractDir) {
         try { Remove-Item -LiteralPath $tempExtractDir -Recurse -Force } catch {}
     }
     New-Item -ItemType Directory -Force -Path $tempExtractDir | Out-Null
 
-    Write-InstallLog "正在解压 OpenSSH 压缩包..."
+    Write-InstallLog "正在静解压缩 OpenSSH 包..."
     $shell = New-Object -ComObject Shell.Application
     $zipFolder = $shell.NameSpace($tempZip)
     $targetFolder = $shell.NameSpace($tempExtractDir)
@@ -208,8 +234,9 @@ function Install-Win32OpenSSH-Fallback {
     if (-not $targetFileFound) {
         throw "解压超时，未在解压目录中找到 install-sshd.ps1。"
     }
+    Write-InstallLog "解压已完成。"
 
-    # 6. 定位解压出来的目录并复制到 Program Files
+    # 7. 定位解压出来的目录并复制到 Program Files
     $extractedFolder = Join-Path $tempExtractDir "OpenSSH-Win64"
     if (-not (Test-Path -LiteralPath $extractedFolder)) {
         $extractedFolder = Join-Path $tempExtractDir "OpenSSH-Win32"
@@ -230,25 +257,63 @@ function Install-Win32OpenSSH-Fallback {
         New-Item -ItemType Directory -Force -Path $destDir | Out-Null
     }
 
-    Write-InstallLog "正在将 OpenSSH 文件复制到安装目录 $destDir..."
+    Write-InstallLog "正在复制 OpenSSH 二进制文件至安装路径 $destDir..."
     Copy-Item -Path (Join-Path $extractedFolder "*") -Destination $destDir -Force -Recurse
 
-    # 7. 运行安装脚本
+    # 8. 运行安装脚本并进行服务兜底注册
     Write-InstallLog "正在调用 install-sshd.ps1 脚本注册 OpenSSH 服务..."
     $installScriptPath = Join-Path $destDir "install-sshd.ps1"
     $installOutputLog = Join-Path $destDir "install-sshd-run.log"
     
-    # 运行官方安装脚本并重定向输出
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installScriptPath > $installOutputLog 2>&1
     
-    # 验证服务是否成功注册
+    # 验证并实施手动 SC 兜底注册
+    $service = Get-Service -Name sshd -ErrorAction SilentlyContinue
+    if ($null -eq $service) {
+        Write-InstallLog "官方脚本注册 sshd 服务未成功，启动 sc.exe 兜底注册流。" "WARN"
+        $sshdPath = Join-Path $destDir "sshd.exe"
+        if (Test-Path -LiteralPath $sshdPath) {
+            cmd.exe /c "sc.exe create sshd binPath= `"$sshdPath`" start= auto displayName= `"OpenSSH SSH Server`""
+            cmd.exe /c "sc.exe description sshd `"OpenSSH SSH Server`""
+            Start-Sleep -Seconds 1
+        }
+    }
+    
+    $agentService = Get-Service -Name ssh-agent -ErrorAction SilentlyContinue
+    if ($null -eq $agentService) {
+        Write-InstallLog "检测并补充注册 ssh-agent 服务..."
+        $agentPath = Join-Path $destDir "ssh-agent.exe"
+        if (Test-Path -LiteralPath $agentPath) {
+            cmd.exe /c "sc.exe create ssh-agent binPath= `"$agentPath`" start= auto displayName= `"OpenSSH Authentication Agent`""
+            cmd.exe /c "sc.exe description ssh-agent `"OpenSSH Authentication Agent`""
+            Start-Sleep -Seconds 1
+        }
+    }
+
+    # 再次验证服务是否已经存在
     $service = Get-Service -Name sshd -ErrorAction SilentlyContinue
     if ($null -eq $service) {
         $logDetails = Get-Content -LiteralPath $installOutputLog -Raw
-        throw "OpenSSH 官方安装脚本执行失败，无法注册 sshd 服务。详细日志：$logDetails"
+        throw "sshd 服务注册失败，无法建立系统服务。详细安装日志：$logDetails"
     }
 
-    Write-InstallLog "OpenSSH Server 服务安装成功！"
+    Write-InstallLog "OpenSSH Server 服务已成功在系统中注册。"
+
+    # 9. 自动将 C:\Program Files\OpenSSH 添加到系统 PATH 环境变量中
+    try {
+        $pathEnv = [Environment]::GetEnvironmentVariable("Path", "Machine")
+        if ($pathEnv -notlike "*C:\Program Files\OpenSSH*") {
+            Write-InstallLog "正在将 OpenSSH 安装目录追加到系统的 PATH 环境变量中..."
+            $newPath = $pathEnv
+            if (-not $newPath.EndsWith(";")) { $newPath += ";" }
+            $newPath += "C:\Program Files\OpenSSH;"
+            [Environment]::SetEnvironmentVariable("Path", $newPath, "Machine")
+            $env:Path += ";C:\Program Files\OpenSSH"
+            Write-InstallLog "系统 PATH 环境变量追加成功。"
+        }
+    } catch {
+        Write-InstallLog "向系统 PATH 追加环境变量失败（非致命）：$($_.Exception.Message)" "WARN"
+    }
 
     # 清理临时文件
     try {

@@ -712,12 +712,18 @@ function Ensure-ServiceInstalled {
                 }
             }
 
-            if ($installer.ExitCode -ne 0) {
-                throw "OpenSSH 安装进程执行失败。"
-            }
-
             Start-Sleep -Seconds 2
             $service = Get-Service -Name sshd -ErrorAction SilentlyContinue
+            $exitCode = $installer.ExitCode
+
+            if ($null -ne $exitCode -and $exitCode -ne 0) {
+                if ($null -ne $service) {
+                    Write-Log "warning [installer] OpenSSH installer process returned non-zero ExitCode ($exitCode), but sshd service was found. Ignoring exit code."
+                } else {
+                    throw "OpenSSH 安装进程执行失败，退出码: $exitCode。"
+                }
+            }
+
             if ($null -eq $service) {
                 throw "OpenSSH 安装完成，但仍未找到 sshd 服务。"
             }
