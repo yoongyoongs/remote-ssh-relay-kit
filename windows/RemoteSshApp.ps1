@@ -1,4 +1,4 @@
-﻿param(
+param(
     [string]$ConfigPath = ""
 )
 
@@ -93,31 +93,65 @@ function Test-IsJsonSimpleValue {
 function Convert-PSObjectToDictionary {
     param($InputObject)
     if ($null -eq $InputObject) { return $null }
+
     if ($InputObject -is [System.Collections.IDictionary]) {
         $dict = @{}
         foreach ($key in $InputObject.Keys) {
-            $dict[$key] = Convert-PSObjectToDictionary -InputObject $InputObject[$key]
+            $keyStr = $key.ToString()
+            $dict[$keyStr] = Convert-PSObjectToDictionary -InputObject $InputObject[$key]
         }
         return $dict
     }
-    elseif ($InputObject -is [System.Collections.IEnumerable] -and $InputObject -isnot [string]) {
+
+    if ($InputObject -is [System.Collections.IEnumerable] -and $InputObject -isnot [string]) {
         $list = New-Object System.Collections.ArrayList
         foreach ($item in $InputObject) {
             $list.Add((Convert-PSObjectToDictionary -InputObject $item)) | Out-Null
         }
         return ,($list.ToArray())
     }
-    elseif (-not (Test-IsJsonSimpleValue -Value $InputObject)) {
-        $props = @($InputObject.PSObject.Properties | Where-Object { $_.MemberType -eq "NoteProperty" -or $_.MemberType -eq "Property" })
-        if ($props.Count -gt 0) {
-            $dict = @{}
-            foreach ($prop in $props) {
-                $dict[$prop.Name] = Convert-PSObjectToDictionary -InputObject $prop.Value
-            }
-            return $dict
-        }
+
+    if ($InputObject -is [string] -or $InputObject -is [ValueType] -or $null -eq $InputObject) {
+        return $InputObject
     }
-    return $InputObject
+
+    if ($InputObject -is [System.Exception]) {
+        return $InputObject.Message
+    }
+
+    $typeStr = $InputObject.GetType().FullName
+    if ($typeStr -like "System.Management.Automation.*" -and $typeStr -ne "System.Management.Automation.PSCustomObject") {
+        return $InputObject.ToString()
+    }
+
+    $dict = @{}
+    try {
+        $props = $InputObject.PSObject.Properties
+        if ($null -ne $props) {
+            foreach ($prop in $props) {
+                $propType = $prop.GetType().FullName
+                if ($propType -like "*PSParameterizedProperty*" -or $propType -like "*PSMethod*") {
+                    continue
+                }
+                if ($prop.MemberType -eq "NoteProperty" -or $prop.MemberType -eq "Property") {
+                    try {
+                        $val = $prop.Value
+                        $dict[$prop.Name] = Convert-PSObjectToDictionary -InputObject $val
+                    } catch {
+                        $dict[$prop.Name] = $_.Exception.Message
+                    }
+                }
+            }
+        }
+    } catch {
+        return $InputObject.ToString()
+    }
+
+    if ($dict.Count -gt 0) {
+        return $dict
+    }
+
+    return $InputObject.ToString()
 }
 
 if ($null -eq (Get-Command "ConvertFrom-Json" -ErrorAction SilentlyContinue)) {
@@ -129,6 +163,7 @@ if ($null -eq (Get-Command "ConvertFrom-Json" -ErrorAction SilentlyContinue)) {
         begin {
             [void][System.Reflection.Assembly]::LoadWithPartialName("System.Web.Extensions")
             $serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+            $serializer.MaxJsonLength = 2147483647
             $json = ""
         }
         process {
@@ -152,191 +187,7 @@ if ($null -eq (Get-Command "ConvertTo-Json" -ErrorAction SilentlyContinue)) {
         begin {
             [void][System.Reflection.Assembly]::LoadWithPartialName("System.Web.Extensions")
             $serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
-        }
-        process {
-            $cleanObj = Convert-PSObjectToDictionary -InputObject $_
-            Write-Output $serializer.Serialize($cleanObj)
-        }
-    }
-}
-
-if ($null -eq (Get-Command "Invoke-RestMethod" -ErrorAction SilentlyContinue)) {
-    function Invoke-RestMethod {
-        param(
-            [string]$Uri,
-            [string]$Method = "Get",
-            [string]$ContentType = "application/json",
-            [string]$Body = ""
-        )
-        $request = [System.Net.WebRequest]::Create($Uri)
-        $request.Method = $Method
-        $request.ContentType = $ContentType
-        $request.Timeout = 15000
-        $request.Proxy = [System.Net.GlobalProxySelection]::GetEmptyWebProxy()
-        
-        if ($Method -eq "Post" -and -not [string]::IsNullOrEmpty($Body)) {
-            $bytes = [System.Text.Encoding]::UTF8.GetBytes($Body)
-            $request.ContentLength = $bytes.Length
-            $requestStream = $request.GetRequestStream()
-            $requestStream.Write($bytes, 0, $bytes.Length)
-            $requestStream.Close()
-        }
-        
-        try {
-            $response = $request.GetResponse()
-            $responseStream = $response.GetResponseStream()
-            $reader = New-Object System.IO.StreamReader($responseStream, [System.Text.Encoding]::UTF8)
-            $responseText = $reader.ReadToEnd()
-            $reader.Close()
-            $responseStream.Close()
-            $response.Close()
-            
-            return ConvertFrom-Json -InputObject $responseText
-        } catch {
-            if ($_.Exception -and $_.Exception.InnerException -is [System.Net.WebException]) {
-                $webEx = $_.Exception.InnerException
-            } elseif ($_.Exception -is [System.Net.WebException]) {
-                $webEx = $_.Exception
-            } else {
-                throw $_
-            }
-            
-            if ($null -ne $webEx.Response) {
-                $responseStream = $webEx.Response.GetResponseStream()
-                $reader = New-Object System.IO.StreamReader($responseStream, [System.Text.Encoding]::UTF8)
-                $errorText = $reader.ReadToEnd()
-                $reader.Close()
-                $responseStream.Close()
-                try {
-                    $errObj = ConvertFrom-Json -InputObject $errorText
-                    if ($null -ne $errObj) { return $errObj }
-                } catch {}
-            }
-            throw $_
-        }
-    }
-}
-
-if ($null -eq (Get-Command "Test-NetConnection" -ErrorAction SilentlyContinue)) {
-    function Test-NetConnection {
-        param(
-            [string]$ComputerName = "127.0.0.1",
-            [int]$Port = 22,
-            $WarningAction
-        )
-        $tcp = New-Object System.Net.Sockets.TcpClient
-        $connected = $false
-        try {
-            $asyncResult = $tcp.BeginConnect($ComputerName, $Port, $null, $null)
-            if ($asyncResult.AsyncWaitHandle.WaitOne(1500, $false) -and $tcp.Connected) {
-                $tcp.EndConnect($asyncResult)
-                $connected = $true
-            }
-        } catch {}
-        finally {
-            $tcp.Close()
-        }
-        return New-Object PSObject -Property @{ TcpTestSucceeded = $connected }
-    }
-}
-
-
-function Get-ContentRaw {
-    param([string]$Path)
-    if (-not (Test-Path -LiteralPath $Path)) { return "" }
-    return [System.IO.File]::ReadAllText($Path)
-}
-
-function Convert-DictionaryToPSObject {
-    param($InputObject)
-    if ($InputObject -is [System.Collections.IDictionary]) {
-        $customObj = New-Object PSObject
-        foreach ($key in $InputObject.Keys) {
-            $value = Convert-DictionaryToPSObject -InputObject $InputObject[$key]
-            $customObj | Add-Member -MemberType NoteProperty -Name $key -Value $value -Force
-        }
-        return $customObj
-    }
-    elseif ($InputObject -is [System.Collections.IEnumerable] -and $InputObject -isnot [string]) {
-        $list = New-Object System.Collections.ArrayList
-        foreach ($item in $InputObject) {
-            $list.Add((Convert-DictionaryToPSObject -InputObject $item)) | Out-Null
-        }
-        return ,($list.ToArray())
-    }
-    return $InputObject
-}
-
-function Test-IsJsonSimpleValue {
-    param($Value)
-    if ($null -eq $Value) { return $true }
-    if ($Value -is [string]) { return $true }
-    if ($Value -is [ValueType]) { return $true }
-    return $false
-}
-
-function Convert-PSObjectToDictionary {
-    param($InputObject)
-    if ($null -eq $InputObject) { return $null }
-    if ($InputObject -is [System.Collections.IDictionary]) {
-        $dict = @{}
-        foreach ($key in $InputObject.Keys) {
-            $dict[$key] = Convert-PSObjectToDictionary -InputObject $InputObject[$key]
-        }
-        return $dict
-    }
-    elseif ($InputObject -is [System.Collections.IEnumerable] -and $InputObject -isnot [string]) {
-        $list = New-Object System.Collections.ArrayList
-        foreach ($item in $InputObject) {
-            $list.Add((Convert-PSObjectToDictionary -InputObject $item)) | Out-Null
-        }
-        return ,($list.ToArray())
-    }
-    elseif (-not (Test-IsJsonSimpleValue -Value $InputObject)) {
-        $props = @($InputObject.PSObject.Properties | Where-Object { $_.MemberType -eq "NoteProperty" -or $_.MemberType -eq "Property" })
-        if ($props.Count -gt 0) {
-            $dict = @{}
-            foreach ($prop in $props) {
-                $dict[$prop.Name] = Convert-PSObjectToDictionary -InputObject $prop.Value
-            }
-            return $dict
-        }
-    }
-    return $InputObject
-}
-
-if ($null -eq (Get-Command "ConvertFrom-Json" -ErrorAction SilentlyContinue)) {
-    function ConvertFrom-Json {
-        param(
-            [Parameter(ValueFromPipeline = $true)]
-            [string]$InputObject
-        )
-        begin {
-            [void][System.Reflection.Assembly]::LoadWithPartialName("System.Web.Extensions")
-            $serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
-            $json = ""
-        }
-        process {
-            $json += $InputObject
-        }
-        end {
-            if ($json -match '^\s*$') { return $null }
-            $obj = $serializer.DeserializeObject($json)
-            return Convert-DictionaryToPSObject -InputObject $obj
-        }
-    }
-}
-
-if ($null -eq (Get-Command "ConvertTo-Json" -ErrorAction SilentlyContinue)) {
-    function ConvertTo-Json {
-        param(
-            [Parameter(ValueFromPipeline = $true)]
-            $InputObject,
-            [int]$Depth = 0
-        )
-        begin {
-            [void][System.Reflection.Assembly]::LoadWithPartialName("System.Web.Extensions")
-            $serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+            $serializer.MaxJsonLength = 2147483647
         }
         process {
             $cleanObj = Convert-PSObjectToDictionary -InputObject $_
@@ -729,171 +580,180 @@ function Get-ConfigValue {
     return $DefaultValue
 }
 
-$config = Read-IniFile -Path $ConfigPath
-$runtimeRoot = Join-Path $env:LOCALAPPDATA "RemoteSshRelay\runtime"
-$workerPath = Join-Path $PSScriptRoot "RemoteSshWorker.ps1"
-$statusPath = Join-Path $runtimeRoot "status.json"
-$resultPath = Join-Path $runtimeRoot "result.json"
-$sessionId = (Get-Date -Format "yyyyMMdd-HHmmss") + "-" + ([System.Guid]::NewGuid().ToString("N").Substring(0, 8))
-$showWorkerWindow = ((Get-ConfigValue -Config $config -Key "SHOW_WORKER_WINDOW" -DefaultValue "false").ToLowerInvariant() -eq "true")
-
-New-Item -ItemType Directory -Force -Path $runtimeRoot | Out-Null
-foreach ($path in @($statusPath, $resultPath, (Join-Path $runtimeRoot "worker.log"))) {
-    if (Test-Path -LiteralPath $path) {
-        Remove-Item -LiteralPath $path -Force
-    }
-}
-
-$workerArgs = @(
-    "-NoProfile",
-    "-ExecutionPolicy", "Bypass",
-    "-File", ('"{0}"' -f $workerPath),
-    "-ConfigPath", ('"{0}"' -f $ConfigPath),
-    "-RuntimeRoot", ('"{0}"' -f $runtimeRoot),
-    "-SessionId", $sessionId
-)
-
-function Test-IsAdministrator {
-    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
-    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-}
-
-$isParentAdmin = Test-IsAdministrator
-$startupLog = Join-Path $runtimeRoot "worker-startup.log"
-$startupOutLog = Join-Path $runtimeRoot "worker-startup.out.log"
-$workerProc = $null
-$workerStartTime = Get-Date
-
 try {
-    if ($global:isParentAdmin) {
-        if ($showWorkerWindow) {
-            $workerProc = Start-Process -FilePath "powershell.exe" -ArgumentList $workerArgs -PassThru
-        } else {
-            $workerProc = Start-Process -FilePath "powershell.exe" -ArgumentList $workerArgs -WindowStyle Hidden -RedirectStandardOutput $startupOutLog -RedirectStandardError $startupLog -PassThru
-        }
-    } else {
-        if ($showWorkerWindow) {
-            Start-Process -FilePath "powershell.exe" -ArgumentList $workerArgs -Verb RunAs | Out-Null
-        } else {
-            Start-Process -FilePath "powershell.exe" -ArgumentList $workerArgs -Verb RunAs -WindowStyle Hidden | Out-Null
-        }
-    }
-} catch {
-    Start-Process -FilePath "powershell.exe" -ArgumentList $workerArgs -Verb RunAs | Out-Null
-}
+    $config = Read-IniFile -Path $ConfigPath
+    $runtimeRoot = Join-Path $env:LOCALAPPDATA "RemoteSshRelay\runtime"
+    $workerPath = Join-Path $PSScriptRoot "RemoteSshWorker.ps1"
+    $statusPath = Join-Path $runtimeRoot "status.json"
+    $resultPath = Join-Path $runtimeRoot "result.json"
+    $sessionId = (Get-Date -Format "yyyyMMdd-HHmmss") + "-" + ([System.Guid]::NewGuid().ToString("N").Substring(0, 8))
+    $showWorkerWindow = ((Get-ConfigValue -Config $config -Key "SHOW_WORKER_WINDOW" -DefaultValue "false").ToLowerInvariant() -eq "true")
 
-function Write-StartupFailureResult {
-    param([string]$Message)
-    if (Test-Path -LiteralPath $resultPath) {
-        return
-    }
-    $payload = @{
-        ok = $false
-        error_code = "WORKER_START_FAILED"
-        message = $Message
-        user_message = "后台任务没有正常启动。请把日志目录截图或打包发给管理员。"
-        runtime_root = $runtimeRoot
-    }
-    $payload | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $resultPath -Encoding utf8
-}
-
-while ($true) {
-    Start-Sleep -Milliseconds 600
-    $status = Read-JsonFile -Path $statusPath
-
-    if ($null -eq $status) {
-        if ($null -ne $workerProc) {
-            try {
-                $workerProc.Refresh()
-                if ($workerProc.HasExited) {
-                    Write-StartupFailureResult -Message ("后台任务启动后立即退出，退出码：{0}。请查看 worker-startup.log / worker-startup.out.log。" -f $workerProc.ExitCode)
-                }
-            } catch {}
-        }
-
-        $elapsedSeconds = ((Get-Date) - $workerStartTime).TotalSeconds
-        if ($elapsedSeconds -gt 45) {
-            Write-StartupFailureResult -Message "等待后台任务启动超过 45 秒，未看到状态文件。可能是 UAC 未确认、PowerShell 兼容错误，或启动器被杀毒软件拦截。"
-        }
-    }
-    
-    # Increment spinner tick
-    $global:spinnerIndex = ($global:spinnerIndex + 1) % $global:spinnerFrames.Count
-    
-    Set-CursorToTop
-    Reset-LineCount
-    
-    Write-ConsoleLine "========================================================================" -ForegroundColor Cyan
-    Write-ConsoleLine "                    ⚡ 远程协助连接助手 (Remote SSH)                    " -ForegroundColor Cyan
-    Write-ConsoleLine ("  会话 ID: {0}" -f $sessionId) -ForegroundColor DarkGray
-    Write-ConsoleLine "========================================================================" -ForegroundColor Cyan
-    Write-ConsoleLine ""
-
-    if ($null -eq $status) {
-        Write-ConsoleLine "  [ ⏳ ] 正在等待后台任务启动..." -ForegroundColor Yellow
-    } else {
-        foreach ($step in $status.steps) {
-            Write-StepLine -Step $step
+    New-Item -ItemType Directory -Force -Path $runtimeRoot | Out-Null
+    foreach ($path in @($statusPath, $resultPath, (Join-Path $runtimeRoot "worker.log"))) {
+        if (Test-Path -LiteralPath $path) {
+            Remove-Item -LiteralPath $path -Force
         }
     }
 
-    $detailLogPath = if ($null -ne $status -and $status.detail_log_path) { $status.detail_log_path } else { Join-Path $runtimeRoot "worker.log" }
-    if (($null -eq $status) -and -not (Test-Path -LiteralPath $detailLogPath) -and (Test-Path -LiteralPath $startupLog)) {
-        $detailLogPath = $startupLog
-    }
-    if (($null -eq $status) -and -not (Test-Path -LiteralPath $detailLogPath) -and (Test-Path -LiteralPath $startupOutLog)) {
-        $detailLogPath = $startupOutLog
-    }
-    $detailLines = Get-RecentLogLines -Path $detailLogPath -LineCount 8
-    
-    Write-ConsoleLine ""
-    Write-ConsoleLine "┌─ 最近活动日志 (Recent Logs) ──────────────────────────────────────────" -ForegroundColor DarkGray
-    if (-not $detailLines) {
-        Write-ConsoleLine "  正在等待日志输出..." -ForegroundColor DarkGray
-    } else {
-        foreach ($line in $detailLines) {
-            $trimmedLine = if ($line.Length -gt 74) { $line.Substring(0, 71) + "..." } else { $line }
-            Write-ConsoleLine "  $trimmedLine" -ForegroundColor DarkGray
-        }
-    }
-    Write-ConsoleLine "└───────────────────────────────────────────────────────────────────────" -ForegroundColor DarkGray
+    $workerArgs = @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", ('"{0}"' -f $workerPath),
+        "-ConfigPath", ('"{0}"' -f $ConfigPath),
+        "-RuntimeRoot", ('"{0}"' -f $runtimeRoot),
+        "-SessionId", $sessionId
+    )
 
-    if (Test-Path -LiteralPath $resultPath) {
-        $result = Read-JsonFile -Path $resultPath
-        Write-ConsoleLine ""
-        if ($result.ok) {
-            Set-ClipboardText -Text $result.connect_command
-            Write-ConsoleLine "========================================================================" -ForegroundColor Green
-            Write-ConsoleLine " 🎉 连接已成功建立！" -ForegroundColor Green
-            Write-ConsoleLine "========================================================================" -ForegroundColor Green
-            Write-ConsoleLine " 📋 连通命令已【自动复制】到您的剪贴板中！" -ForegroundColor Yellow
-            Write-ConsoleLine " 💬 请直接在聊天窗口中 粘贴 (Ctrl + V) 并发给协助您的管理员即可。" -ForegroundColor Yellow
-            Write-ConsoleLine ""
-            Write-ConsoleLine " ℹ️ 协助命令 (如需手动复制):" -ForegroundColor DarkGray
-            Write-ConsoleLine "    $($result.connect_command)" -ForegroundColor Cyan
-            Write-ConsoleLine "========================================================================" -ForegroundColor Green
-        } else {
-            $diagnosticPath = New-DiagnosticBundle -RuntimeRoot $runtimeRoot -SessionId $sessionId -Result $result
-            Write-ConsoleLine "========================================================================" -ForegroundColor Red
-            Write-ConsoleLine " ❌ 配置失败" -ForegroundColor Red
-            Write-ConsoleLine "========================================================================" -ForegroundColor Red
-            if ((($diagnosticPath) -match "\S")) {
-                Write-ConsoleLine " 已在桌面生成诊断包，并自动打开了所在位置。" -ForegroundColor Yellow
-                Write-ConsoleLine " 请把下面这个文件发给管理员：" -ForegroundColor Yellow
-                Write-ConsoleLine " $diagnosticPath" -ForegroundColor Cyan
-                Write-ConsoleLine " 文件路径也已经复制到剪贴板。" -ForegroundColor Yellow
-            } elseif ($result.user_message) {
-                Write-ConsoleLine " $($result.user_message)" -ForegroundColor Yellow
+    $isParentAdmin = Test-IsAdministrator
+    $startupLog = Join-Path $runtimeRoot "worker-startup.log"
+    $startupOutLog = Join-Path $runtimeRoot "worker-startup.out.log"
+    $workerProc = $null
+    $workerStartTime = Get-Date
+
+    try {
+        if ($global:isParentAdmin) {
+            if ($showWorkerWindow) {
+                $workerProc = Start-Process -FilePath "powershell.exe" -ArgumentList $workerArgs -PassThru
+            } else {
+                $workerProc = Start-Process -FilePath "powershell.exe" -ArgumentList $workerArgs -WindowStyle Hidden -RedirectStandardOutput $startupOutLog -RedirectStandardError $startupLog -PassThru
             }
-            Write-ConsoleLine " 错误信息: $($result.message)" -ForegroundColor DarkGray
-            Write-ConsoleLine "========================================================================" -ForegroundColor Red
+        } else {
+            if ($showWorkerWindow) {
+                Start-Process -FilePath "powershell.exe" -ArgumentList $workerArgs -Verb RunAs | Out-Null
+            } else {
+                Start-Process -FilePath "powershell.exe" -ArgumentList $workerArgs -Verb RunAs -WindowStyle Hidden | Out-Null
+            }
+        }
+    } catch {
+        Start-Process -FilePath "powershell.exe" -ArgumentList $workerArgs -Verb RunAs | Out-Null
+    }
+
+    function Write-StartupFailureResult {
+        param([string]$Message)
+        if (Test-Path -LiteralPath $resultPath) {
+            return
+        }
+        try {
+            $payload = @{
+                ok = $false
+                error_code = "WORKER_START_FAILED"
+                message = $Message
+                user_message = "后台任务没有正常启动。请把日志目录截图或打包发给管理员。"
+                runtime_root = $runtimeRoot
+            }
+            $payload | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $resultPath -Encoding utf8
+        } catch {
+            # 如果序列化失败（在 PS 2.0 上可能发生），写入硬编码的 JSON 字符串作为保底
+            $escapedMsg = $Message -replace '"', '\\"' -replace "\r?\n", " "
+            $rawJson = '{"ok":false,"error_code":"WORKER_START_FAILED","message":"' + $escapedMsg + '","user_message":"后台任务没有正常启动。请把日志目录截图或打包发给管理员。"}'
+            [System.IO.File]::WriteAllText($resultPath, $rawJson, [System.Text.Encoding]::UTF8)
+        }
+    }
+
+    while ($true) {
+        Start-Sleep -Milliseconds 600
+        $status = Read-JsonFile -Path $statusPath
+
+        if ($null -eq $status) {
+            if ($null -ne $workerProc) {
+                try {
+                    $workerProc.Refresh()
+                    if ($workerProc.HasExited) {
+                        Write-StartupFailureResult -Message ("后台任务启动后立即退出，退出码：{0}。请查看 worker-startup.log / worker-startup.out.log。" -f $workerProc.ExitCode)
+                    }
+                } catch {}
+            }
+
+            $elapsedSeconds = ((Get-Date) - $workerStartTime).TotalSeconds
+            if ($elapsedSeconds -gt 45) {
+                Write-StartupFailureResult -Message "等待后台任务启动超过 45 秒，未看到状态文件。可能是 UAC 未确认、PowerShell 兼容错误，或启动器被杀毒软件拦截。"
+            }
+        }
+        
+        # Increment spinner tick
+        $global:spinnerIndex = ($global:spinnerIndex + 1) % $global:spinnerFrames.Count
+        
+        Set-CursorToTop
+        Reset-LineCount
+        
+        Write-ConsoleLine "========================================================================" -ForegroundColor Cyan
+        Write-ConsoleLine "                    ⚡ 远程协助连接助手 (Remote SSH)                    " -ForegroundColor Cyan
+        Write-ConsoleLine ("  会话 ID: {0}" -f $sessionId) -ForegroundColor DarkGray
+        Write-ConsoleLine "========================================================================" -ForegroundColor Cyan
+        Write-ConsoleLine ""
+
+        if ($null -eq $status) {
+            Write-ConsoleLine "  [ ⏳ ] 正在等待后台任务启动..." -ForegroundColor Yellow
+        } else {
+            foreach ($step in $status.steps) {
+                Write-StepLine -Step $step
+            }
+        }
+
+        $detailLogPath = if ($null -ne $status -and $status.detail_log_path) { $status.detail_log_path } else { Join-Path $runtimeRoot "worker.log" }
+        if (($null -eq $status) -and -not (Test-Path -LiteralPath $detailLogPath) -and (Test-Path -LiteralPath $startupLog)) {
+            $detailLogPath = $startupLog
+        }
+        if (($null -eq $status) -and -not (Test-Path -LiteralPath $detailLogPath) -and (Test-Path -LiteralPath $startupOutLog)) {
+            $detailLogPath = $startupOutLog
+        }
+        $detailLines = Get-RecentLogLines -Path $detailLogPath -LineCount 8
+        
+        Write-ConsoleLine ""
+        Write-ConsoleLine "┌─ 最近活动日志 (Recent Logs) ──────────────────────────────────────────" -ForegroundColor DarkGray
+        if (-not $detailLines) {
+            Write-ConsoleLine "  正在等待日志输出..." -ForegroundColor DarkGray
+        } else {
+            foreach ($line in $detailLines) {
+                $trimmedLine = if ($line.Length -gt 74) { $line.Substring(0, 71) + "..." } else { $line }
+                Write-ConsoleLine "  $trimmedLine" -ForegroundColor DarkGray
+            }
+        }
+        Write-ConsoleLine "└───────────────────────────────────────────────────────────────────────" -ForegroundColor DarkGray
+
+        if (Test-Path -LiteralPath $resultPath) {
+            $result = Read-JsonFile -Path $resultPath
+            Write-ConsoleLine ""
+            if ($result.ok) {
+                Set-ClipboardText -Text $result.connect_command
+                Write-ConsoleLine "========================================================================" -ForegroundColor Green
+                Write-ConsoleLine " 🎉 连接已成功建立！" -ForegroundColor Green
+                Write-ConsoleLine "========================================================================" -ForegroundColor Green
+                Write-ConsoleLine " 📋 连通命令已【自动复制】到您的剪贴板中！" -ForegroundColor Yellow
+                Write-ConsoleLine " 💬 请直接在聊天窗口中 粘贴 (Ctrl + V) 并发给协助您的管理员即可。" -ForegroundColor Yellow
+                Write-ConsoleLine ""
+                Write-ConsoleLine " ℹ️ 协助命令 (如需手动复制):" -ForegroundColor DarkGray
+                Write-ConsoleLine "    $($result.connect_command)" -ForegroundColor Cyan
+                Write-ConsoleLine "========================================================================" -ForegroundColor Green
+            } else {
+                $diagnosticPath = New-DiagnosticBundle -RuntimeRoot $runtimeRoot -SessionId $sessionId -Result $result
+                Write-ConsoleLine "========================================================================" -ForegroundColor Red
+                Write-ConsoleLine " ❌ 配置失败" -ForegroundColor Red
+                Write-ConsoleLine "========================================================================" -ForegroundColor Red
+                if ((($diagnosticPath) -match "\S")) {
+                    Write-ConsoleLine " 已在桌面生成诊断包，并自动打开了所在位置。" -ForegroundColor Yellow
+                    Write-ConsoleLine " 请把下面这个文件发给管理员：" -ForegroundColor Yellow
+                    Write-ConsoleLine " $diagnosticPath" -ForegroundColor Cyan
+                    Write-ConsoleLine " 文件路径也已经复制到剪贴板。" -ForegroundColor Yellow
+                } elseif ($result.user_message) {
+                    Write-ConsoleLine " $($result.user_message)" -ForegroundColor Yellow
+                }
+                Write-ConsoleLine " 错误信息: $($result.message)" -ForegroundColor DarkGray
+                Write-ConsoleLine "========================================================================" -ForegroundColor Red
+            }
+            Clear-RemainingLines
+            break
         }
         Clear-RemainingLines
-        break
     }
-    
-    Clear-RemainingLines
+} catch {
+    Write-Host ""
+    Write-Host "========================================================================" -ForegroundColor Red
+    Write-Host " ❌ 主程序运行发生致命错误：" -ForegroundColor Red
+    Write-Host " $_" -ForegroundColor Yellow
+    Write-Host "========================================================================" -ForegroundColor Red
+    Write-Host ""
 }
 
 Write-Host ""

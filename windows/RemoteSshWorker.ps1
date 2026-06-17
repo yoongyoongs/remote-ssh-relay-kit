@@ -1,4 +1,4 @@
-﻿param(
+param(
     [string]$ConfigPath,
     [string]$RuntimeRoot,
     [string]$SessionId,
@@ -68,31 +68,65 @@ function Test-IsJsonSimpleValue {
 function Convert-PSObjectToDictionary {
     param($InputObject)
     if ($null -eq $InputObject) { return $null }
+
     if ($InputObject -is [System.Collections.IDictionary]) {
         $dict = @{}
         foreach ($key in $InputObject.Keys) {
-            $dict[$key] = Convert-PSObjectToDictionary -InputObject $InputObject[$key]
+            $keyStr = $key.ToString()
+            $dict[$keyStr] = Convert-PSObjectToDictionary -InputObject $InputObject[$key]
         }
         return $dict
     }
-    elseif ($InputObject -is [System.Collections.IEnumerable] -and $InputObject -isnot [string]) {
+
+    if ($InputObject -is [System.Collections.IEnumerable] -and $InputObject -isnot [string]) {
         $list = New-Object System.Collections.ArrayList
         foreach ($item in $InputObject) {
             $list.Add((Convert-PSObjectToDictionary -InputObject $item)) | Out-Null
         }
         return ,($list.ToArray())
     }
-    elseif (-not (Test-IsJsonSimpleValue -Value $InputObject)) {
-        $props = @($InputObject.PSObject.Properties | Where-Object { $_.MemberType -eq "NoteProperty" -or $_.MemberType -eq "Property" })
-        if ($props.Count -gt 0) {
-            $dict = @{}
-            foreach ($prop in $props) {
-                $dict[$prop.Name] = Convert-PSObjectToDictionary -InputObject $prop.Value
-            }
-            return $dict
-        }
+
+    if ($InputObject -is [string] -or $InputObject -is [ValueType] -or $null -eq $InputObject) {
+        return $InputObject
     }
-    return $InputObject
+
+    if ($InputObject -is [System.Exception]) {
+        return $InputObject.Message
+    }
+
+    $typeStr = $InputObject.GetType().FullName
+    if ($typeStr -like "System.Management.Automation.*" -and $typeStr -ne "System.Management.Automation.PSCustomObject") {
+        return $InputObject.ToString()
+    }
+
+    $dict = @{}
+    try {
+        $props = $InputObject.PSObject.Properties
+        if ($null -ne $props) {
+            foreach ($prop in $props) {
+                $propType = $prop.GetType().FullName
+                if ($propType -like "*PSParameterizedProperty*" -or $propType -like "*PSMethod*") {
+                    continue
+                }
+                if ($prop.MemberType -eq "NoteProperty" -or $prop.MemberType -eq "Property") {
+                    try {
+                        $val = $prop.Value
+                        $dict[$prop.Name] = Convert-PSObjectToDictionary -InputObject $val
+                    } catch {
+                        $dict[$prop.Name] = $_.Exception.Message
+                    }
+                }
+            }
+        }
+    } catch {
+        return $InputObject.ToString()
+    }
+
+    if ($dict.Count -gt 0) {
+        return $dict
+    }
+
+    return $InputObject.ToString()
 }
 
 if ($null -eq (Get-Command "ConvertFrom-Json" -ErrorAction SilentlyContinue)) {
@@ -104,6 +138,7 @@ if ($null -eq (Get-Command "ConvertFrom-Json" -ErrorAction SilentlyContinue)) {
         begin {
             [void][System.Reflection.Assembly]::LoadWithPartialName("System.Web.Extensions")
             $serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+            $serializer.MaxJsonLength = 2147483647
             $json = ""
         }
         process {
@@ -127,191 +162,7 @@ if ($null -eq (Get-Command "ConvertTo-Json" -ErrorAction SilentlyContinue)) {
         begin {
             [void][System.Reflection.Assembly]::LoadWithPartialName("System.Web.Extensions")
             $serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
-        }
-        process {
-            $cleanObj = Convert-PSObjectToDictionary -InputObject $_
-            Write-Output $serializer.Serialize($cleanObj)
-        }
-    }
-}
-
-if ($null -eq (Get-Command "Invoke-RestMethod" -ErrorAction SilentlyContinue)) {
-    function Invoke-RestMethod {
-        param(
-            [string]$Uri,
-            [string]$Method = "Get",
-            [string]$ContentType = "application/json",
-            [string]$Body = ""
-        )
-        $request = [System.Net.WebRequest]::Create($Uri)
-        $request.Method = $Method
-        $request.ContentType = $ContentType
-        $request.Timeout = 15000
-        $request.Proxy = [System.Net.GlobalProxySelection]::GetEmptyWebProxy()
-        
-        if ($Method -eq "Post" -and -not [string]::IsNullOrEmpty($Body)) {
-            $bytes = [System.Text.Encoding]::UTF8.GetBytes($Body)
-            $request.ContentLength = $bytes.Length
-            $requestStream = $request.GetRequestStream()
-            $requestStream.Write($bytes, 0, $bytes.Length)
-            $requestStream.Close()
-        }
-        
-        try {
-            $response = $request.GetResponse()
-            $responseStream = $response.GetResponseStream()
-            $reader = New-Object System.IO.StreamReader($responseStream, [System.Text.Encoding]::UTF8)
-            $responseText = $reader.ReadToEnd()
-            $reader.Close()
-            $responseStream.Close()
-            $response.Close()
-            
-            return ConvertFrom-Json -InputObject $responseText
-        } catch {
-            if ($_.Exception -and $_.Exception.InnerException -is [System.Net.WebException]) {
-                $webEx = $_.Exception.InnerException
-            } elseif ($_.Exception -is [System.Net.WebException]) {
-                $webEx = $_.Exception
-            } else {
-                throw $_
-            }
-            
-            if ($null -ne $webEx.Response) {
-                $responseStream = $webEx.Response.GetResponseStream()
-                $reader = New-Object System.IO.StreamReader($responseStream, [System.Text.Encoding]::UTF8)
-                $errorText = $reader.ReadToEnd()
-                $reader.Close()
-                $responseStream.Close()
-                try {
-                    $errObj = ConvertFrom-Json -InputObject $errorText
-                    if ($null -ne $errObj) { return $errObj }
-                } catch {}
-            }
-            throw $_
-        }
-    }
-}
-
-if ($null -eq (Get-Command "Test-NetConnection" -ErrorAction SilentlyContinue)) {
-    function Test-NetConnection {
-        param(
-            [string]$ComputerName = "127.0.0.1",
-            [int]$Port = 22,
-            $WarningAction
-        )
-        $tcp = New-Object System.Net.Sockets.TcpClient
-        $connected = $false
-        try {
-            $asyncResult = $tcp.BeginConnect($ComputerName, $Port, $null, $null)
-            if ($asyncResult.AsyncWaitHandle.WaitOne(1500, $false) -and $tcp.Connected) {
-                $tcp.EndConnect($asyncResult)
-                $connected = $true
-            }
-        } catch {}
-        finally {
-            $tcp.Close()
-        }
-        return New-Object PSObject -Property @{ TcpTestSucceeded = $connected }
-    }
-}
-
-
-function Get-ContentRaw {
-    param([string]$Path)
-    if (-not (Test-Path -LiteralPath $Path)) { return "" }
-    return [System.IO.File]::ReadAllText($Path)
-}
-
-function Convert-DictionaryToPSObject {
-    param($InputObject)
-    if ($InputObject -is [System.Collections.IDictionary]) {
-        $customObj = New-Object PSObject
-        foreach ($key in $InputObject.Keys) {
-            $value = Convert-DictionaryToPSObject -InputObject $InputObject[$key]
-            $customObj | Add-Member -MemberType NoteProperty -Name $key -Value $value -Force
-        }
-        return $customObj
-    }
-    elseif ($InputObject -is [System.Collections.IEnumerable] -and $InputObject -isnot [string]) {
-        $list = New-Object System.Collections.ArrayList
-        foreach ($item in $InputObject) {
-            $list.Add((Convert-DictionaryToPSObject -InputObject $item)) | Out-Null
-        }
-        return ,($list.ToArray())
-    }
-    return $InputObject
-}
-
-function Test-IsJsonSimpleValue {
-    param($Value)
-    if ($null -eq $Value) { return $true }
-    if ($Value -is [string]) { return $true }
-    if ($Value -is [ValueType]) { return $true }
-    return $false
-}
-
-function Convert-PSObjectToDictionary {
-    param($InputObject)
-    if ($null -eq $InputObject) { return $null }
-    if ($InputObject -is [System.Collections.IDictionary]) {
-        $dict = @{}
-        foreach ($key in $InputObject.Keys) {
-            $dict[$key] = Convert-PSObjectToDictionary -InputObject $InputObject[$key]
-        }
-        return $dict
-    }
-    elseif ($InputObject -is [System.Collections.IEnumerable] -and $InputObject -isnot [string]) {
-        $list = New-Object System.Collections.ArrayList
-        foreach ($item in $InputObject) {
-            $list.Add((Convert-PSObjectToDictionary -InputObject $item)) | Out-Null
-        }
-        return ,($list.ToArray())
-    }
-    elseif (-not (Test-IsJsonSimpleValue -Value $InputObject)) {
-        $props = @($InputObject.PSObject.Properties | Where-Object { $_.MemberType -eq "NoteProperty" -or $_.MemberType -eq "Property" })
-        if ($props.Count -gt 0) {
-            $dict = @{}
-            foreach ($prop in $props) {
-                $dict[$prop.Name] = Convert-PSObjectToDictionary -InputObject $prop.Value
-            }
-            return $dict
-        }
-    }
-    return $InputObject
-}
-
-if ($null -eq (Get-Command "ConvertFrom-Json" -ErrorAction SilentlyContinue)) {
-    function ConvertFrom-Json {
-        param(
-            [Parameter(ValueFromPipeline = $true)]
-            [string]$InputObject
-        )
-        begin {
-            [void][System.Reflection.Assembly]::LoadWithPartialName("System.Web.Extensions")
-            $serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
-            $json = ""
-        }
-        process {
-            $json += $InputObject
-        }
-        end {
-            if ($json -match '^\s*$') { return $null }
-            $obj = $serializer.DeserializeObject($json)
-            return Convert-DictionaryToPSObject -InputObject $obj
-        }
-    }
-}
-
-if ($null -eq (Get-Command "ConvertTo-Json" -ErrorAction SilentlyContinue)) {
-    function ConvertTo-Json {
-        param(
-            [Parameter(ValueFromPipeline = $true)]
-            $InputObject,
-            [int]$Depth = 0
-        )
-        begin {
-            [void][System.Reflection.Assembly]::LoadWithPartialName("System.Web.Extensions")
-            $serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+            $serializer.MaxJsonLength = 2147483647
         }
         process {
             $cleanObj = Convert-PSObjectToDictionary -InputObject $_
@@ -1140,44 +991,56 @@ function Run-TunnelKeeperMode {
     exit 0
 }
 
+# 1. 预定义核心运行时路径与状态对象，防止初始化崩溃时无法记录错误结果
+$script:RuntimeRoot = $RuntimeRoot
+$script:ResultPath = Join-Path $RuntimeRoot "result.json"
+$script:StatusPath = Join-Path $RuntimeRoot "status.json"
+$script:LogPath = Join-Path $RuntimeRoot "worker.log"
+$script:Status = @{
+    session_id = $SessionId
+    current_step = "init"
+    overall_status = "running"
+    detail_log_path = $script:LogPath
+    steps = @()
+}
+
 if ($Mode -eq "tunnel_keeper") {
     Run-TunnelKeeperMode
 }
-$config = Read-IniFile -Path $ConfigPath
-$script:RuntimeRoot = $RuntimeRoot
-$script:StatusPath = Join-Path $RuntimeRoot "status.json"
-$script:ResultPath = Join-Path $RuntimeRoot "result.json"
-$script:LogPath = Join-Path $RuntimeRoot "worker.log"
-$script:Config = $config
-$script:DryRun = Get-ConfigFlag -Config $config -Key "DRY_RUN"
-$script:ConnectionSettings = @{}
-New-Item -ItemType Directory -Force -Path $RuntimeRoot | Out-Null
-Set-Content -LiteralPath $script:LogPath -Value ("[{0}] 后台执行器已启动。" -f (Get-Date -Format "s")) -Encoding utf8
-
-$script:Status = @{
-    session_id = $SessionId
-    current_step = ""
-    overall_status = "running"
-    detail_log_path = $script:LogPath
-    steps = @(
-        @{ id = "check_admin"; title = "Check administrator privileges"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
-        @{ id = "validate_config"; title = "Validate config"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
-        @{ id = "fetch_connection_settings"; title = "Fetch connection settings"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
-        @{ id = "check_openssh"; title = "Check OpenSSH Server"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
-        @{ id = "install_openssh"; title = "Install OpenSSH Server"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
-        @{ id = "start_sshd"; title = "Start sshd service"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
-        @{ id = "configure_firewall"; title = "Configure Windows Firewall"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
-        @{ id = "verify_local_ssh"; title = "Verify local SSH"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
-        @{ id = "generate_device_key"; title = "Generate device key"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
-        @{ id = "write_authorized_keys"; title = "Write admin public key"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
-        @{ id = "enroll_device"; title = "Register with relay server"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
-        @{ id = "start_reverse_tunnel"; title = "Start reverse SSH tunnel"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
-        @{ id = "verify_tunnel"; title = "Verify tunnel"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null }
-    )
-}
-Save-Status
 
 try {
+    # 创建运行目录与启动日志
+    New-Item -ItemType Directory -Force -Path $RuntimeRoot | Out-Null
+    Set-Content -LiteralPath $script:LogPath -Value ("[{0}] 后台执行器已启动。" -f (Get-Date -Format "s")) -Encoding utf8
+
+    $config = Read-IniFile -Path $ConfigPath
+    $script:Config = $config
+    $script:DryRun = Get-ConfigFlag -Config $config -Key "DRY_RUN"
+    $script:ConnectionSettings = @{}
+
+    $script:Status = @{
+        session_id = $SessionId
+        current_step = ""
+        overall_status = "running"
+        detail_log_path = $script:LogPath
+        steps = @(
+            @{ id = "check_admin"; title = "Check administrator privileges"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
+            @{ id = "validate_config"; title = "Validate config"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
+            @{ id = "fetch_connection_settings"; title = "Fetch connection settings"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
+            @{ id = "check_openssh"; title = "Check OpenSSH Server"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
+            @{ id = "install_openssh"; title = "Install OpenSSH Server"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
+            @{ id = "start_sshd"; title = "Start sshd service"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
+            @{ id = "configure_firewall"; title = "Configure Windows Firewall"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
+            @{ id = "verify_local_ssh"; title = "Verify local SSH"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
+            @{ id = "generate_device_key"; title = "Generate device key"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
+            @{ id = "write_authorized_keys"; title = "Write admin public key"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
+            @{ id = "enroll_device"; title = "Register with relay server"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
+            @{ id = "start_reverse_tunnel"; title = "Start reverse SSH tunnel"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
+            @{ id = "verify_tunnel"; title = "Verify tunnel"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null }
+        )
+    }
+    Save-Status
+
     Set-StepState -Id "check_admin" -State "running" -Message "正在检查管理员权限。"
     if (-not $script:DryRun -and -not (Test-IsAdministrator)) {
         throw "后台执行器必须在管理员权限下运行。"
@@ -1204,7 +1067,11 @@ try {
         user_message = "连接已经准备完成，请把命令发给管理员。"
     }
 } catch {
-    Write-Log "fatal [failed] $($_.Exception.Message)"
+    try {
+        if ($script:LogPath) {
+            Write-Log "fatal [failed] $($_.Exception.Message)"
+        }
+    } catch {}
     Finish-Run -Ok $false -Payload @{
         error_code = "WORKER_FAILED"
         message = $_.Exception.Message
