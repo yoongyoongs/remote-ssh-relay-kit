@@ -13,25 +13,53 @@ if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
 $suffix = if ($Version) { "-$Version" } else { "" }
 $zipPath = Join-Path $OutputRoot "remote-ssh-relay-kit$suffix.zip"
 $stageRoot = Join-Path $OutputRoot "package"
+$tempStageRoot = Join-Path $OutputRoot "package_temp_build"
 
-# 1. 打包主源码发布包
-if (Test-Path -LiteralPath $stageRoot) {
+# 1. Clean up temp staging path if it exists
+if (Test-Path -LiteralPath $tempStageRoot) {
     try {
-        Remove-Item -LiteralPath $stageRoot -Recurse -Force -ErrorAction SilentlyContinue
-    } catch {}
+        Remove-Item -LiteralPath $tempStageRoot -Recurse -Force -ErrorAction Stop
+    } catch {
+        Write-Warning "Failed to delete temp build stage: $_"
+    }
 }
+New-Item -ItemType Directory -Force -Path $tempStageRoot | Out-Null
+
+# 2. Copy code files to temp staging path
+foreach ($name in @("server", "windows", "mac", "docs", "scripts", "README.md", "package.json")) {
+    Copy-Item -LiteralPath (Join-Path $projectRoot $name) -Destination $tempStageRoot -Recurse -Force
+}
+
+# 3. Compress from temp staging path to output zip
 if (Test-Path -LiteralPath $zipPath) {
     try {
         Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
     } catch {}
 }
+Compress-Archive -Path (Join-Path $tempStageRoot "*") -DestinationPath $zipPath -Force
 
-New-Item -ItemType Directory -Force -Path $stageRoot | Out-Null
-foreach ($name in @("server", "windows", "mac", "docs", "scripts", "README.md", "package.json")) {
-    Copy-Item -LiteralPath (Join-Path $projectRoot $name) -Destination $stageRoot -Recurse -Force
+# 4. Clean up temp staging path
+try {
+    Remove-Item -LiteralPath $tempStageRoot -Recurse -Force -ErrorAction SilentlyContinue
+} catch {}
+
+# 5. Mirror files to release/package individually, avoiding locked files
+if (-not (Test-Path -LiteralPath $stageRoot)) {
+    New-Item -ItemType Directory -Force -Path $stageRoot | Out-Null
+} else {
+    # Try to clean up existing files/folders in package directory, ignoring locked ones
+    Get-ChildItem -Path $stageRoot | ForEach-Object {
+        try {
+            Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+        } catch {}
+    }
 }
 
-Compress-Archive -Path (Join-Path $stageRoot "*") -DestinationPath $zipPath -Force
+foreach ($name in @("server", "windows", "mac", "docs", "scripts", "README.md", "package.json")) {
+    try {
+        Copy-Item -LiteralPath (Join-Path $projectRoot $name) -Destination $stageRoot -Recurse -Force -ErrorAction SilentlyContinue
+    } catch {}
+}
 Write-Host "Release package created:"
 Write-Host "  $zipPath"
 
