@@ -578,8 +578,19 @@ function Ensure-SshdRunning {
                 Write-Log "info [sshd] start command invoked successfully."
             }
             if (-not (Use-LiveRelayInDryRun)) {
-                Write-Log "info [sshd] setting startup type of sshd to Automatic."
-                Set-Service -Name sshd -StartupType Automatic
+                Write-Log "info [sshd] setting startup type of sshd to Automatic..."
+                $setServiceCommand = Get-Command "Set-Service" -ErrorAction SilentlyContinue
+                if ($null -ne $setServiceCommand -and $setServiceCommand.Parameters.ContainsKey("StartupType")) {
+                    Set-Service -Name sshd -StartupType Automatic
+                    Write-Log "info [sshd] Set-Service -StartupType Automatic completed."
+                } else {
+                    Write-Log "info [sshd] Set-Service does not support -StartupType parameter (Win7/PS 2.0). Fallback to sc.exe..."
+                    cmd.exe /c "sc.exe config sshd start= auto"
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "通过 sc.exe 设置 sshd 为自动启动失败。"
+                    }
+                    Write-Log "info [sshd] sc.exe config sshd start= auto completed."
+                }
             }
         }
         Set-StepState -Id "start_sshd" -State "success" -Message "sshd 服务正在运行。"
@@ -594,22 +605,47 @@ function Ensure-FirewallRule {
             return
         }
 
-        Write-Log "info [firewall] checking net-firewall rule for RemoteSshRelay-OpenSSH..."
-        $rule = Get-NetFirewallRule -Name "RemoteSshRelay-OpenSSH" -ErrorAction SilentlyContinue
-        if ($null -eq $rule) {
-            Write-Log "info [firewall] rule not found, creating rule RemoteSshRelay-OpenSSH allowing inbound port 22..."
-            New-NetFirewallRule `
-                -Name "RemoteSshRelay-OpenSSH" `
-                -DisplayName "Remote SSH Relay - OpenSSH" `
-                -Direction Inbound `
-                -Protocol TCP `
-                -LocalPort 22 `
-                -Action Allow | Out-Null
-            Set-StepState -Id "configure_firewall" -State "success" -Message "已创建防火墙规则。"
-            Write-Log "info [firewall] firewall rule created successfully."
+        # 检查是否支持 Windows 8+ 防火墙 Cmdlets，如果不支持（Win7），使用 netsh 兼容写入
+        $hasNetSecurity = $null -ne (Get-Command "Get-NetFirewallRule" -ErrorAction SilentlyContinue)
+        if ($hasNetSecurity) {
+            Write-Log "info [firewall] checking net-firewall rule for RemoteSshRelay-OpenSSH..."
+            $rule = Get-NetFirewallRule -Name "RemoteSshRelay-OpenSSH" -ErrorAction SilentlyContinue
+            if ($null -eq $rule) {
+                Write-Log "info [firewall] rule not found, creating rule RemoteSshRelay-OpenSSH allowing inbound port 22..."
+                New-NetFirewallRule `
+                    -Name "RemoteSshRelay-OpenSSH" `
+                    -DisplayName "Remote SSH Relay - OpenSSH" `
+                    -Direction Inbound `
+                    -Protocol TCP `
+                    -LocalPort 22 `
+                    -Action Allow | Out-Null
+                Set-StepState -Id "configure_firewall" -State "success" -Message "已创建防火墙规则。"
+                Write-Log "info [firewall] firewall rule created successfully."
+            } else {
+                Write-Log "info [firewall] firewall rule RemoteSshRelay-OpenSSH already exists."
+                Set-StepState -Id "configure_firewall" -State "skipped" -Message "防火墙规则已存在。"
+            }
         } else {
-            Write-Log "info [firewall] firewall rule RemoteSshRelay-OpenSSH already exists."
-            Set-StepState -Id "configure_firewall" -State "skipped" -Message "防火墙规则已存在。"
+            Write-Log "info [firewall] NetSecurity cmdlets are unavailable (Win7). Using netsh fallback..."
+            # 使用 netsh 查询规则
+            $netshCheck = cmd.exe /c "netsh advfirewall firewall show rule name=`"RemoteSshRelay-OpenSSH`""
+            $ruleExists = $false
+            if ($LASTEXITCODE -eq 0 -and $netshCheck -match "RemoteSshRelay-OpenSSH") {
+                $ruleExists = $true
+            }
+
+            if (-not $ruleExists) {
+                Write-Log "info [firewall] creating firewall rule via netsh for port 22..."
+                cmd.exe /c "netsh advfirewall firewall add rule name=`"RemoteSshRelay-OpenSSH`" dir=in action=allow protocol=TCP localport=22"
+                if ($LASTEXITCODE -ne 0) {
+                    throw "通过 netsh 添加防火墙规则失败。"
+                }
+                Set-StepState -Id "configure_firewall" -State "success" -Message "已创建防火墙规则 (netsh)。"
+                Write-Log "info [firewall] firewall rule created successfully via netsh."
+            } else {
+                Write-Log "info [firewall] firewall rule RemoteSshRelay-OpenSSH already exists (netsh check)."
+                Set-StepState -Id "configure_firewall" -State "skipped" -Message "防火墙规则已存在。"
+            }
         }
     }
 }
@@ -1086,6 +1122,7 @@ try {
         user_message = "处理过程中发生错误。请按提示检查 config.ini，或把日志和截图发给管理员。"
     }
 }
+
 
 
 
