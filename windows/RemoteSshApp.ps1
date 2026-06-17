@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$ConfigPath = ""
 )
 
@@ -56,8 +56,14 @@ try {
 if (-not $PSScriptRoot) {
     $PSScriptRoot = Split-Path -Parent -Path $MyInvocation.MyCommand.Path
 }
+if (-not $PSScriptRoot -or (($PSScriptRoot) -match "^\s*$")) {
+    $PSScriptRoot = [System.IO.Path]::GetFullPath((Get-Location))
+}
 if (-not $PSCommandPath) {
     $PSCommandPath = $MyInvocation.MyCommand.Path
+}
+if (-not $PSCommandPath -or (($PSCommandPath) -match "^\s*$")) {
+    $PSCommandPath = Join-Path $PSScriptRoot "RemoteSshApp.ps1"
 }
 
 if ((($ConfigPath) -match "^\s*$")) {
@@ -68,6 +74,19 @@ function Get-ContentRaw {
     param([string]$Path)
     if (-not (Test-Path -LiteralPath $Path)) { return "" }
     return [System.IO.File]::ReadAllText($Path)
+}
+
+function Safe-WriteAllText {
+    param([string]$Path, [string]$Content)
+    try {
+        $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
+        $writer = New-Object System.IO.StreamWriter($stream, [System.Text.Encoding]::UTF8)
+        $writer.Write($Content)
+        $writer.Close()
+        $stream.Close()
+    } catch {
+        [System.IO.File]::WriteAllText($Path, $Content, [System.Text.Encoding]::UTF8)
+    }
 }
 
 function Convert-DictionaryToPSObject {
@@ -176,13 +195,92 @@ if ($null -eq (Get-Command "ConvertTo-Json" -ErrorAction SilentlyContinue)) {
             [int]$Depth = 0
         )
         begin {
-            [void][System.Reflection.Assembly]::LoadWithPartialName("System.Web.Extensions")
-            $serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
-            $serializer.MaxJsonLength = 2147483647
+            function Safe-ConvertTo-Json-Fallback {
+                param($Obj)
+                if ($null -eq $Obj) { return "null" }
+                if ($Obj -is [bool]) { return if ($Obj) { "true" } else { "false" } }
+                if ($Obj -is [ValueType] -and $Obj -isnot [bool]) { return $Obj.ToString() }
+                if ($Obj -is [string]) {
+                    $escaped = $Obj -replace '\\', '\\\\' -replace '"', '\\"' -replace "\r?\n", " "
+                    return '"{0}"' -f $escaped
+                }
+                if ($Obj -is [System.Collections.IDictionary]) {
+                    $parts = @()
+                    foreach ($key in $Obj.Keys) {
+                        $valStr = Safe-ConvertTo-Json-Fallback -Obj $Obj[$key]
+                        $parts += '"{0}":{1}' -f $key, $valStr
+                    }
+                    return "{" + ($parts -join ",") + "}"
+                }
+                if ($Obj -is [System.Collections.IEnumerable]) {
+                    $parts = @()
+                    foreach ($item in $Obj) {
+                        $parts += Safe-ConvertTo-Json-Fallback -Obj $item
+                    }
+                    return "[" + ($parts -join ",") + "]"
+                }
+                return '"{0}"' -f ($Obj.ToString() -replace '\\', '\\\\' -replace '"', '\\"')
+            }
+
+            try {
+                [void][System.Reflection.Assembly]::LoadWithPartialName("System.Web.Extensions")
+                $serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+                $serializer.MaxJsonLength = 2147483647
+                $hasSerializer = $true
+            } catch {
+                $hasSerializer = $false
+            }
+            $accumulated = New-Object System.Collections.ArrayList
+            $isPipelineInput = $false
         }
         process {
-            $cleanObj = Convert-PSObjectToDictionary -InputObject $_
-            Write-Output $serializer.Serialize($cleanObj)
+            $isPipelineInput = $true
+            $accumulated.Add($_) | Out-Null
+        }
+        end {
+            $rawObj = $null
+            if (-not $isPipelineInput) {
+                $rawObj = $InputObject
+            } else {
+                if ($accumulated.Count -eq 1) {
+                    $first = $accumulated[0]
+                    if ($first -is [System.Collections.DictionaryEntry]) {
+                        $dict = @{}
+                        $dict[$first.Key.ToString()] = $first.Value
+                        $rawObj = $dict
+                    } else {
+                        $rawObj = $first
+                    }
+                } else {
+                    $allDictEntries = $true
+                    foreach ($item in $accumulated) {
+                        if ($item -isnot [System.Collections.DictionaryEntry]) {
+                            $allDictEntries = $false
+                            break
+                        }
+                    }
+                    if ($allDictEntries) {
+                        $rebuiltDict = @{}
+                        foreach ($entry in $accumulated) {
+                            $rebuiltDict[$entry.Key.ToString()] = $entry.Value
+                        }
+                        $rawObj = $rebuiltDict
+                    } else {
+                        $rawObj = $accumulated
+                    }
+                }
+            }
+
+            $cleanObj = Convert-PSObjectToDictionary -InputObject $rawObj
+            if ($hasSerializer) {
+                try {
+                    Write-Output $serializer.Serialize($cleanObj)
+                } catch {
+                    Write-Output (Safe-ConvertTo-Json-Fallback -Obj $cleanObj)
+                }
+            } else {
+                Write-Output (Safe-ConvertTo-Json-Fallback -Obj $cleanObj)
+            }
         }
     }
 }
@@ -307,7 +405,11 @@ function Get-RecentLogLines {
         return @()
     }
     try {
-        return @(Get-Content -LiteralPath $Path -Tail $LineCount -ErrorAction Stop)
+        $content = @(Get-Content -LiteralPath $Path -ErrorAction Stop)
+        if ($content.Count -gt $LineCount) {
+            return $content[($content.Count - $LineCount)..($content.Count - 1)]
+        }
+        return $content
     } catch {
         return @()
     }
@@ -440,7 +542,20 @@ function New-DiagnosticBundle {
                         break
                     }
                 }
-                try { Remove-Item -LiteralPath $bundleFolder -Recurse -Force } catch {}
+                # 额外缓冲 1.5 秒确保 OS 写入句柄完全关闭并落盘
+                Start-Sleep -Milliseconds 1500
+
+                # 安全循环尝试删除临时文件夹，如果报错（文件被占用），就等待 500ms 重试
+                $deleted = $false
+                $deleteDeadline = (Get-Date).AddSeconds(5)
+                while (-not $deleted -and (Get-Date) -lt $deleteDeadline) {
+                    try {
+                        Remove-Item -LiteralPath $bundleFolder -Recurse -Force -ErrorAction Stop
+                        $deleted = $true
+                    } catch {
+                        Start-Sleep -Milliseconds 500
+                    }
+                }
                 try { Start-Process -FilePath "explorer.exe" -ArgumentList ("/select,`"$zipPath`"") | Out-Null } catch {}
                 Set-ClipboardText -Text $zipPath
                 return $zipPath
@@ -635,12 +750,13 @@ try {
                 user_message = "后台任务没有正常启动。请把日志目录截图或打包发给管理员。"
                 runtime_root = $runtimeRoot
             }
-            $payload | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $resultPath -Encoding utf8
+            $jsonStr = $payload | ConvertTo-Json -Depth 6
+            Safe-WriteAllText -Path $resultPath -Content $jsonStr
         } catch {
-            # 如果序列化失败（在 PS 2.0 上可能发生），写入硬编码的 JSON 字符串作为保底
+            # 如果序列化失败，写入硬编码的 JSON 字符串作为保底
             $escapedMsg = $Message -replace '"', '\\"' -replace "\r?\n", " "
             $rawJson = '{"ok":false,"error_code":"WORKER_START_FAILED","message":"' + $escapedMsg + '","user_message":"后台任务没有正常启动。请把日志目录截图或打包发给管理员。"}'
-            [System.IO.File]::WriteAllText($resultPath, $rawJson, [System.Text.Encoding]::UTF8)
+            Safe-WriteAllText -Path $resultPath -Content $rawJson
         }
     }
 
@@ -757,6 +873,7 @@ try {
 Write-Host ""
 Write-Host "按 Enter 键关闭窗口。"
 [void][System.Console]::ReadLine()
+
 
 
 

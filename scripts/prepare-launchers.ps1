@@ -26,7 +26,7 @@ function Stamp-ConfigFile {
     $config = $config -replace 'BOOTSTRAP_TOKEN=.*', "BOOTSTRAP_TOKEN=$BootstrapToken"
     $config = $config -replace 'ENROLL_CODE=.*', "ENROLL_CODE="
     $config = $config -replace 'ADMIN_PUBLIC_KEY=.*', "ADMIN_PUBLIC_KEY="
-    Set-Content -LiteralPath $Path -Value $config -Encoding ascii
+    [System.IO.File]::WriteAllText($Path, $config, [System.Text.Encoding]::UTF8)
 }
 
 $projectRoot = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
@@ -38,7 +38,9 @@ $macSource = Join-Path $projectRoot "mac"
 $docsSource = Join-Path $projectRoot "docs"
 
 if (Test-Path -LiteralPath $OutputRoot) {
-    Remove-Item -LiteralPath $OutputRoot -Recurse -Force
+    try {
+        Remove-Item -LiteralPath $OutputRoot -Recurse -Force -ErrorAction SilentlyContinue
+    } catch {}
 }
 
 $windowsOut = Join-Path $OutputRoot "windows"

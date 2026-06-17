@@ -16,10 +16,14 @@ $stageRoot = Join-Path $OutputRoot "package"
 
 # 1. 打包主源码发布包
 if (Test-Path -LiteralPath $stageRoot) {
-    Remove-Item -LiteralPath $stageRoot -Recurse -Force
+    try {
+        Remove-Item -LiteralPath $stageRoot -Recurse -Force -ErrorAction SilentlyContinue
+    } catch {}
 }
 if (Test-Path -LiteralPath $zipPath) {
-    Remove-Item -LiteralPath $zipPath -Force
+    try {
+        Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
+    } catch {}
 }
 
 New-Item -ItemType Directory -Force -Path $stageRoot | Out-Null

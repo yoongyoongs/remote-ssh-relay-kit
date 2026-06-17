@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$ConfigPath,
     [string]$RuntimeRoot,
     [string]$SessionId,
@@ -23,15 +23,14 @@ try {
 if (-not $PSScriptRoot) {
     $PSScriptRoot = Split-Path -Parent -Path $MyInvocation.MyCommand.Path
 }
-if (-not $PSCommandPath) {
-    $PSCommandPath = $MyInvocation.MyCommand.Path
-}
-
-if (-not $PSScriptRoot) {
-    $PSScriptRoot = Split-Path -Parent -Path $MyInvocation.MyCommand.Path
+if (-not $PSScriptRoot -or (($PSScriptRoot) -match "^\s*$")) {
+    $PSScriptRoot = [System.IO.Path]::GetFullPath((Get-Location))
 }
 if (-not $PSCommandPath) {
     $PSCommandPath = $MyInvocation.MyCommand.Path
+}
+if (-not $PSCommandPath -or (($PSCommandPath) -match "^\s*$")) {
+    $PSCommandPath = Join-Path $PSScriptRoot "RemoteSshWorker.ps1"
 }
 
 
@@ -39,6 +38,19 @@ function Get-ContentRaw {
     param([string]$Path)
     if (-not (Test-Path -LiteralPath $Path)) { return "" }
     return [System.IO.File]::ReadAllText($Path)
+}
+
+function Safe-WriteAllText {
+    param([string]$Path, [string]$Content)
+    try {
+        $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
+        $writer = New-Object System.IO.StreamWriter($stream, [System.Text.Encoding]::UTF8)
+        $writer.Write($Content)
+        $writer.Close()
+        $stream.Close()
+    } catch {
+        [System.IO.File]::WriteAllText($Path, $Content, [System.Text.Encoding]::UTF8)
+    }
 }
 
 function Convert-DictionaryToPSObject {
@@ -147,13 +159,92 @@ if ($null -eq (Get-Command "ConvertTo-Json" -ErrorAction SilentlyContinue)) {
             [int]$Depth = 0
         )
         begin {
-            [void][System.Reflection.Assembly]::LoadWithPartialName("System.Web.Extensions")
-            $serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
-            $serializer.MaxJsonLength = 2147483647
+            function Safe-ConvertTo-Json-Fallback {
+                param($Obj)
+                if ($null -eq $Obj) { return "null" }
+                if ($Obj -is [bool]) { return if ($Obj) { "true" } else { "false" } }
+                if ($Obj -is [ValueType] -and $Obj -isnot [bool]) { return $Obj.ToString() }
+                if ($Obj -is [string]) {
+                    $escaped = $Obj -replace '\\', '\\\\' -replace '"', '\\"' -replace "\r?\n", " "
+                    return '"{0}"' -f $escaped
+                }
+                if ($Obj -is [System.Collections.IDictionary]) {
+                    $parts = @()
+                    foreach ($key in $Obj.Keys) {
+                        $valStr = Safe-ConvertTo-Json-Fallback -Obj $Obj[$key]
+                        $parts += '"{0}":{1}' -f $key, $valStr
+                    }
+                    return "{" + ($parts -join ",") + "}"
+                }
+                if ($Obj -is [System.Collections.IEnumerable]) {
+                    $parts = @()
+                    foreach ($item in $Obj) {
+                        $parts += Safe-ConvertTo-Json-Fallback -Obj $item
+                    }
+                    return "[" + ($parts -join ",") + "]"
+                }
+                return '"{0}"' -f ($Obj.ToString() -replace '\\', '\\\\' -replace '"', '\\"')
+            }
+
+            try {
+                [void][System.Reflection.Assembly]::LoadWithPartialName("System.Web.Extensions")
+                $serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+                $serializer.MaxJsonLength = 2147483647
+                $hasSerializer = $true
+            } catch {
+                $hasSerializer = $false
+            }
+            $accumulated = New-Object System.Collections.ArrayList
+            $isPipelineInput = $false
         }
         process {
-            $cleanObj = Convert-PSObjectToDictionary -InputObject $_
-            Write-Output $serializer.Serialize($cleanObj)
+            $isPipelineInput = $true
+            $accumulated.Add($_) | Out-Null
+        }
+        end {
+            $rawObj = $null
+            if (-not $isPipelineInput) {
+                $rawObj = $InputObject
+            } else {
+                if ($accumulated.Count -eq 1) {
+                    $first = $accumulated[0]
+                    if ($first -is [System.Collections.DictionaryEntry]) {
+                        $dict = @{}
+                        $dict[$first.Key.ToString()] = $first.Value
+                        $rawObj = $dict
+                    } else {
+                        $rawObj = $first
+                    }
+                } else {
+                    $allDictEntries = $true
+                    foreach ($item in $accumulated) {
+                        if ($item -isnot [System.Collections.DictionaryEntry]) {
+                            $allDictEntries = $false
+                            break
+                        }
+                    }
+                    if ($allDictEntries) {
+                        $rebuiltDict = @{}
+                        foreach ($entry in $accumulated) {
+                            $rebuiltDict[$entry.Key.ToString()] = $entry.Value
+                        }
+                        $rawObj = $rebuiltDict
+                    } else {
+                        $rawObj = $accumulated
+                    }
+                }
+            }
+
+            $cleanObj = Convert-PSObjectToDictionary -InputObject $rawObj
+            if ($hasSerializer) {
+                try {
+                    Write-Output $serializer.Serialize($cleanObj)
+                } catch {
+                    Write-Output (Safe-ConvertTo-Json-Fallback -Obj $cleanObj)
+                }
+            } else {
+                Write-Output (Safe-ConvertTo-Json-Fallback -Obj $cleanObj)
+            }
         }
     }
 }
@@ -235,6 +326,9 @@ if ($null -eq (Get-Command "Test-NetConnection" -ErrorAction SilentlyContinue)) 
             }
         } catch {}
         finally {
+            if ($null -ne $tcp.Client) {
+                try { $tcp.Client.Close() } catch {}
+            }
             $tcp.Close()
         }
         return New-Object PSObject -Property @{ TcpTestSucceeded = $connected }
@@ -354,7 +448,8 @@ function Set-DetailLogPath {
 }
 
 function Save-Status {
-    $script:Status | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $script:StatusPath -Encoding utf8
+    $jsonStr = $script:Status | ConvertTo-Json -Depth 8
+    Safe-WriteAllText -Path $script:StatusPath -Content $jsonStr
 }
 
 function Set-StepState {
@@ -394,7 +489,8 @@ function Finish-Run {
     
     $Payload["ok"] = $Ok
     try {
-        $Payload | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $script:ResultPath -Encoding utf8
+        $jsonStr = $Payload | ConvertTo-Json -Depth 8
+        Safe-WriteAllText -Path $script:ResultPath -Content $jsonStr
     } catch {
         # 如果序列化失败，使用硬编码的 JSON 字符串作为最终保底，防止进程无声崩溃并让主程序在1秒内检测到
         $msg = if ($Payload.ContainsKey("message")) { $Payload["message"] } else { $_.Exception.Message }
@@ -403,7 +499,7 @@ function Finish-Run {
         $escapedUserMsg = $userMsg -replace '"', '\\"' -replace "\r?\n", " "
         $okText = if ($Ok) { "true" } else { "false" }
         $rawJson = '{"ok":' + $okText + ',"error_code":"WORKER_FAILED","message":"' + $escapedMsg + '","user_message":"' + $escapedUserMsg + '"}'
-        [System.IO.File]::WriteAllText($script:ResultPath, $rawJson, [System.Text.Encoding]::UTF8)
+        Safe-WriteAllText -Path $script:ResultPath -Content $rawJson
     }
     exit
 }
@@ -799,8 +895,13 @@ function Ensure-AuthorizedKey {
             if ($adminContent -notcontains $adminKey) {
                 Add-Content -LiteralPath $adminAuthPath -Value $adminKey -Encoding utf8
             }
-            & icacls.exe $adminAuthPath /inheritance:r | Out-Null
-            & icacls.exe $adminAuthPath /grant "Administrators:F" "SYSTEM:F" | Out-Null
+            try {
+                & icacls.exe $adminAuthPath /inheritance:r | Out-Null
+                & icacls.exe $adminAuthPath /grant "Administrators:F" "SYSTEM:F" | Out-Null
+                Write-Log "info [ssh] successfully updated ACL permissions for administrators_authorized_keys"
+            } catch {
+                Write-Log "warning [ssh] failed to update ACL permissions using icacls: $($_.Exception.Message)"
+            }
         }
         Set-StepState -Id "write_authorized_keys" -State "success" -Message "管理员公钥已写入。"
     }
@@ -996,12 +1097,14 @@ function Save-KeeperState {
         [string]$Message,
         [int]$SshPid = 0
     )
-    @{
+    $dict = @{
         status = $Status
         message = $Message
         ssh_pid = $SshPid
         updated_at = (Get-Date).ToUniversalTime().ToString("s") + "Z"
-    } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $script:StatePath -Encoding utf8
+    }
+    $jsonStr = $dict | ConvertTo-Json -Depth 4
+    Safe-WriteAllText -Path $script:StatePath -Content $jsonStr
 }
 
 function Append-KeeperRunLogs {
@@ -1192,6 +1295,7 @@ try {
         user_message = "处理过程中发生错误。请按提示检查 config.ini，或把日志和截图发给管理员。"
     }
 }
+
 
 
 
