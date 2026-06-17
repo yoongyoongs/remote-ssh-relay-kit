@@ -94,38 +94,7 @@ function Convert-PSObjectToDictionary {
         return $InputObject.Message
     }
 
-    $typeStr = $InputObject.GetType().FullName
-    if ($typeStr -ne "System.Management.Automation.PSCustomObject") {
-        return $InputObject.ToString()
-    }
-
-    $dict = @{}
-    try {
-        $props = $InputObject.PSObject.Properties
-        if ($null -ne $props) {
-            foreach ($prop in $props) {
-                $propType = $prop.GetType().FullName
-                if ($propType -like "*PSParameterizedProperty*" -or $propType -like "*PSMethod*") {
-                    continue
-                }
-                if ($prop.MemberType -eq "NoteProperty" -or $prop.MemberType -eq "Property") {
-                    try {
-                        $val = $prop.Value
-                        $dict[$prop.Name] = Convert-PSObjectToDictionary -InputObject $val
-                    } catch {
-                        $dict[$prop.Name] = $_.Exception.Message
-                    }
-                }
-            }
-        }
-    } catch {
-        return $InputObject.ToString()
-    }
-
-    if ($dict.Count -gt 0) {
-        return $dict
-    }
-
+    # 釜底抽薪：除了白名单中允许的字典、集合、简单值和异常外，其他任何复杂类型一律禁止进行反射，直接降级返回为字符串，彻底断绝循环引用
     return $InputObject.ToString()
 }
 
@@ -1078,6 +1047,7 @@ try {
         user_message = "处理过程中发生错误。请按提示检查 config.ini，或把日志和截图发给管理员。"
     }
 }
+
 
 
 
