@@ -95,8 +95,12 @@ function Convert-PSObjectToDictionary {
     }
 
     $typeStr = $InputObject.GetType().FullName
-    if ($typeStr -like "System.Management.Automation.*" -and $typeStr -ne "System.Management.Automation.PSCustomObject") {
-        return $InputObject.ToString()
+    if ($typeStr) {
+        if (($typeStr.StartsWith("System.") -or $typeStr.StartsWith("Microsoft.")) -and 
+            $typeStr -ne "System.Management.Automation.PSCustomObject" -and 
+            -not $typeStr.StartsWith("System.Collections.")) {
+            return $InputObject.ToString()
+        }
     }
 
     $dict = @{}
@@ -1078,6 +1082,7 @@ try {
         user_message = "处理过程中发生错误。请按提示检查 config.ini，或把日志和截图发给管理员。"
     }
 }
+
 
 
 
