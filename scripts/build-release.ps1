@@ -56,9 +56,7 @@ if (-not (Test-Path -LiteralPath $stageRoot)) {
 }
 
 foreach ($name in @("server", "windows", "mac", "docs", "scripts", "README.md", "package.json")) {
-    try {
-        Copy-Item -LiteralPath (Join-Path $projectRoot $name) -Destination $stageRoot -Recurse -Force -ErrorAction SilentlyContinue
-    } catch {}
+    Copy-Item -LiteralPath (Join-Path $projectRoot $name) -Destination $stageRoot -Recurse -Force
 }
 Write-Host "Release package created:"
 Write-Host "  $zipPath"
