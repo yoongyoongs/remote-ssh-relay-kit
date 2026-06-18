@@ -50,7 +50,10 @@ function Get-LastLines {
         $lines = @(Get-Content -LiteralPath $Path -ErrorAction SilentlyContinue)
         $total = $lines.Count
         if ($total -eq 0) { return "" }
-        $start = $(if ($total -gt $Count) { $total - $Count } else { 0 })
+        $start = 0
+        if ($total -gt $Count) {
+            $start = $total - $Count
+        }
         $subset = $lines[$start..($total - 1)]
         return $subset -join "`n"
     } catch {
@@ -432,7 +435,10 @@ function Ensure-SshDependencies {
         if ($null -eq $is64 -or -not $is64) {
             $is64 = ($env:PROCESSOR_ARCHITECTURE -eq "AMD64") -or ($env:PROCESSOR_ARCHITEW6432 -eq "AMD64")
         }
-        $dllSuffix = $(if ($is64) { "x64" } else { "x86" })
+        $dllSuffix = "x86"
+        if ($is64) {
+            $dllSuffix = "x64"
+        }
         
         $depDir = Join-Path $PSScriptRoot "dep"
         
@@ -474,7 +480,10 @@ function Get-ConfigFlag {
         [string]$Key,
         [bool]$DefaultValue = $false
     )
-    $defaultText = $(if ($DefaultValue) { "true" } else { "false" })
+    $defaultText = "false"
+    if ($DefaultValue) {
+        $defaultText = "true"
+    }
     return ((Get-ConfigValue -Config $Config -Key $Key -DefaultValue $defaultText).ToLowerInvariant() -eq "true")
 }
 
@@ -534,7 +543,11 @@ function Set-StepState {
         }
     }
     $script:Status.current_step = $Id
-    $script:Status.overall_status = $(if ($State -eq "failed") { "failed" } else { "running" })
+    if ($State -eq "failed") {
+        $script:Status.overall_status = "failed"
+    } else {
+        $script:Status.overall_status = "running"
+    }
     Save-Status
     Write-Log "$Id [$State] $Message"
 }
@@ -544,7 +557,11 @@ function Finish-Run {
         [bool]$Ok,
         [hashtable]$Payload
     )
-    $script:Status.overall_status = $(if ($Ok) { "success" } else { "failed" })
+    if ($Ok) {
+        $script:Status.overall_status = "success"
+    } else {
+        $script:Status.overall_status = "failed"
+    }
     try {
         Save-Status
     } catch {}
@@ -555,11 +572,20 @@ function Finish-Run {
         Safe-WriteAllText -Path $script:ResultPath -Content $jsonStr
     } catch {
         # 如果序列化失败，使用硬编码的 JSON 字符串作为最终保底，防止进程无声崩溃并让主程序在1秒内检测到
-        $msg = $(if ($Payload.ContainsKey("message")) { $Payload["message"] } else { $_.Exception.Message })
-        $userMsg = $(if ($Payload.ContainsKey("user_message")) { $Payload["user_message"] } else { "后台任务没有正常启动。" })
-        $escapedMsg = $msg -replace '"', '\\"' -replace "\r?\n", " "
-        $escapedUserMsg = $userMsg -replace '"', '\\"' -replace "\r?\n", " "
-        $okText = $(if ($Ok) { "true" } else { "false" })
+        $msg = ""
+        if ($Payload.ContainsKey("message")) {
+            $msg = $Payload["message"]
+        } else {
+            $msg = $_.Exception.Message
+        }
+        $userMsg = "后台任务没有正常启动。"
+        if ($Payload.ContainsKey("user_message")) {
+            $userMsg = $Payload["user_message"]
+        }
+        $okText = "false"
+        if ($Ok) {
+            $okText = "true"
+        }
         $rawJson = '{"ok":' + $okText + ',"error_code":"WORKER_FAILED","message":"' + $escapedMsg + '","user_message":"' + $escapedUserMsg + '"}'
         Safe-WriteAllText -Path $script:ResultPath -Content $rawJson
     }
@@ -703,8 +729,18 @@ function Ensure-ServiceInstalled {
         if ($script:DryRun) {
             $installLogPath = Join-Path $script:RuntimeRoot "install-openssh.log"
             Set-DetailLogPath -Path $installLogPath
-            $modeLine = $(if ($mode -eq "cmd") { "[INFO] 将通过单独的 cmd 窗口安装 OpenSSH Server（演练模式）。" } else { "[INFO] 将在后台安装 OpenSSH Server（演练模式）。" })
-            $progressLine = $(if ($mode -eq "cmd") { "[INFO] 正在通过单独的 cmd 窗口安装 OpenSSH Server，这一步可能需要几分钟。" } else { "[INFO] 正在后台安装 OpenSSH Server，这一步可能需要几分钟。" })
+            $modeLine = ""
+            if ($mode -eq "cmd") {
+                $modeLine = "[INFO] 将通过单独的 cmd 窗口安装 OpenSSH Server（演练模式）。"
+            } else {
+                $modeLine = "[INFO] 将在后台安装 OpenSSH Server（演练模式）。"
+            }
+            $progressLine = ""
+            if ($mode -eq "cmd") {
+                $progressLine = "[INFO] 正在通过单独的 cmd 窗口安装 OpenSSH Server，这一步可能需要几分钟。"
+            } else {
+                $progressLine = "[INFO] 正在后台安装 OpenSSH Server，这一步可能需要几分钟。"
+            }
             foreach ($line in @(
                 "[INFO] OpenSSH 安装器已启动（演练模式）。",
                 $modeLine,
@@ -733,15 +769,16 @@ function Ensure-ServiceInstalled {
                 "-LogPath", ('"{0}"' -f $installLogPath)
             )
 
-            $installer = $(if ($mode -eq "cmd") {
+            $installer = $null
+            if ($mode -eq "cmd") {
                 $cmdArgs = @(
                     "/c",
                     ('title OpenSSH Installer && powershell.exe {0}' -f ($installerArgs -join " "))
                 )
-                Start-Process -FilePath "cmd.exe" -ArgumentList $cmdArgs -PassThru
+                $installer = Start-Process -FilePath "cmd.exe" -ArgumentList $cmdArgs -PassThru
             } else {
-                Start-Process -FilePath "powershell.exe" -ArgumentList $installerArgs -PassThru -WindowStyle Hidden
-            })
+                $installer = Start-Process -FilePath "powershell.exe" -ArgumentList $installerArgs -PassThru -WindowStyle Hidden
+            }
 
             $lastSeen = 0
             $lastLine = ""
@@ -1059,9 +1096,22 @@ function Enroll-Device {
         }
 
         if ($script:DryRun) {
-            $resolvedRelayHost = $(if ($script:ConnectionSettings.relay_host) { $script:ConnectionSettings.relay_host } else { $Config["RELAY_HOST"] })
-            $resolvedRelaySshPort = $(if ($script:ConnectionSettings.relay_ssh_port) { [int]$script:ConnectionSettings.relay_ssh_port } else { [int](Get-ConfigValue -Config $Config -Key "RELAY_SSH_PORT" -DefaultValue "22") })
-            $resolvedRelayUser = $(if ($script:ConnectionSettings.relay_user) { $script:ConnectionSettings.relay_user } else { "tunnel" })
+            $resolvedRelayHost = ""
+            if ($script:ConnectionSettings.relay_host) {
+                $resolvedRelayHost = $script:ConnectionSettings.relay_host
+            } else {
+                $resolvedRelayHost = $Config["RELAY_HOST"]
+            }
+            $resolvedRelaySshPort = 22
+            if ($script:ConnectionSettings.relay_ssh_port) {
+                $resolvedRelaySshPort = [int]$script:ConnectionSettings.relay_ssh_port
+            } else {
+                $resolvedRelaySshPort = [int](Get-ConfigValue -Config $Config -Key "RELAY_SSH_PORT" -DefaultValue "22")
+            }
+            $resolvedRelayUser = "tunnel"
+            if ($script:ConnectionSettings.relay_user) {
+                $resolvedRelayUser = $script:ConnectionSettings.relay_user
+            }
             $response = @{
                 ok               = $true
                 relay_host       = $resolvedRelayHost
@@ -1343,7 +1393,10 @@ function Run-TunnelKeeperMode {
 
         Append-KeeperRunLogs -StdoutPath $runStdoutPath -StderrPath $runStderrPath
         $proc.Refresh()
-        $exitCode = $(if ($proc.HasExited) { $proc.ExitCode } else { -1 })
+        $exitCode = -1
+        if ($proc.HasExited) {
+            $exitCode = $proc.ExitCode
+        }
 
         if (Test-Path -LiteralPath $stopFlagPath) {
             Save-KeeperState -Status "stopped" -Message "隧道守护进程已停止。"
@@ -1417,7 +1470,13 @@ try {
     if (-not $script:DryRun -and -not (Test-IsAdministrator)) {
         throw "后台执行器必须在管理员权限下运行。"
     }
-    Set-StepState -Id "check_admin" -State "success" -Message $(if ($script:DryRun) { "演练模式下已跳过管理员权限检查。" } else { "已确认管理员权限。" })
+    else {
+        $msg = "已确认管理员权限。"
+        if ($script:DryRun) {
+            $msg = "演练模式下已跳过管理员权限检查。"
+        }
+        Set-StepState -Id "check_admin" -State "success" -Message $msg
+    }
 
     Validate-Config -Config $config
     Resolve-ConnectionSettings -Config $config
