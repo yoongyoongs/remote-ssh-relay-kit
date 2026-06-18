@@ -771,8 +771,8 @@ function Ensure-ServiceInstalled {
             $installerArgs = @(
                 "-NoProfile",
                 "-ExecutionPolicy", "Bypass",
-                "-File", ('"{0}"' -f $installerScript),
-                "-LogPath", ('"{0}"' -f $installLogPath)
+                "-File", $installerScript,
+                "-LogPath", $installLogPath
             )
 
             $installer = $null
@@ -1194,10 +1194,10 @@ function Start-ReverseTunnel {
         $keeperArgs = @(
             "-NoProfile",
             "-ExecutionPolicy", "Bypass",
-            "-File", ('"{0}"' -f $keeperScript),
+            "-File", $keeperScript,
             "-Mode", "tunnel_keeper",
-            "-RuntimeRoot", ('"{0}"' -f $script:RuntimeRoot),
-            "-DeviceKeyPath", ('"{0}"' -f $DeviceKeyPath),
+            "-RuntimeRoot", $script:RuntimeRoot,
+            "-DeviceKeyPath", $DeviceKeyPath,
             "-RelayHost", $EnrollResponse.relay_host,
             "-RelaySshPort", "$($EnrollResponse.relay_ssh_port)",
             "-RelayUser", $EnrollResponse.relay_user,
@@ -1367,56 +1367,62 @@ function Run-TunnelKeeperMode {
         "$RelayUser@$RelayHost"
     )
 
-    while (-not (Test-Path -LiteralPath $stopFlagPath)) {
-        $runStamp = Get-Date -Format "yyyyMMdd-HHmmss"
-        $runStdoutPath = Join-Path $RuntimeRoot ("tunnel-run-{0}.stdout.log" -f $runStamp)
-        $runStderrPath = Join-Path $RuntimeRoot ("tunnel-run-{0}.stderr.log" -f $runStamp)
+    try {
+        while (-not (Test-Path -LiteralPath $stopFlagPath)) {
+            $runStamp = Get-Date -Format "yyyyMMdd-HHmmss"
+            $runStdoutPath = Join-Path $RuntimeRoot ("tunnel-run-{0}.stdout.log" -f $runStamp)
+            $runStderrPath = Join-Path $RuntimeRoot ("tunnel-run-{0}.stderr.log" -f $runStamp)
 
-        Write-KeeperLog ("准备建立反向隧道，目标端口 {0} -> {1}:{2}" -f $RemotePort, $LocalHost, $LocalPort)
-        Save-KeeperState -Status "connecting" -Message "正在建立反向 SSH 隧道。"
+            Write-KeeperLog ("准备建立反向隧道，目标端口 {0} -> {1}:{2}" -f $RemotePort, $LocalHost, $LocalPort)
+            Save-KeeperState -Status "connecting" -Message "正在建立反向 SSH 隧道。"
 
-        $sshExe = Get-OpenSshExecutablePath -Name "ssh.exe"
-        Write-KeeperLog ("检测并准备 SSH 运行环境：{0}" -f $sshExe)
-        Ensure-SshDependencies -ExePath $sshExe
+            $sshExe = Get-OpenSshExecutablePath -Name "ssh.exe"
+            Write-KeeperLog ("检测并准备 SSH 运行环境：{0}" -f $sshExe)
+            Ensure-SshDependencies -ExePath $sshExe
 
-        $proc = Start-Process -FilePath $sshExe -ArgumentList $sshArgs -PassThru -WindowStyle Hidden -RedirectStandardOutput $runStdoutPath -RedirectStandardError $runStderrPath
-        Start-Sleep -Seconds 3
-        $proc.Refresh()
+            $proc = Start-Process -FilePath $sshExe -ArgumentList $sshArgs -PassThru -WindowStyle Hidden -RedirectStandardOutput $runStdoutPath -RedirectStandardError $runStderrPath
+            Start-Sleep -Seconds 3
+            $proc.Refresh()
 
-        if (-not $proc.HasExited) {
-            Write-KeeperLog ("反向隧道已建立，ssh 进程 PID={0}" -f $proc.Id)
-            Save-KeeperState -Status "connected" -Message "反向 SSH 隧道已建立。" -SshPid $proc.Id
-            while (-not $proc.HasExited) {
-                if (Test-Path -LiteralPath $stopFlagPath) {
-                    Write-KeeperLog "收到停止标记，准备关闭隧道进程。"
-                    try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch {}
-                    break
+            if (-not $proc.HasExited) {
+                Write-KeeperLog ("反向隧道已建立，ssh 进程 PID={0}" -f $proc.Id)
+                Save-KeeperState -Status "connected" -Message "反向 SSH 隧道已建立。" -SshPid $proc.Id
+                while (-not $proc.HasExited) {
+                    if (Test-Path -LiteralPath $stopFlagPath) {
+                        Write-KeeperLog "收到停止标记，准备关闭隧道进程。"
+                        try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch {}
+                        break
+                    }
+                    Start-Sleep -Seconds 2
+                    $proc.Refresh()
                 }
-                Start-Sleep -Seconds 2
-                $proc.Refresh()
             }
-        }
 
-        Append-KeeperRunLogs -StdoutPath $runStdoutPath -StderrPath $runStderrPath
-        $proc.Refresh()
-        $exitCode = -1
-        if ($proc.HasExited) {
-            $exitCode = $proc.ExitCode
-        }
+            Append-KeeperRunLogs -StdoutPath $runStdoutPath -StderrPath $runStderrPath
+            $proc.Refresh()
+            $exitCode = -1
+            if ($proc.HasExited) {
+                $exitCode = $proc.ExitCode
+            }
 
-        if (Test-Path -LiteralPath $stopFlagPath) {
-            Save-KeeperState -Status "stopped" -Message "隧道守护进程已停止。"
-            Write-KeeperLog "隧道守护进程已停止。"
-            break
-        }
+            if (Test-Path -LiteralPath $stopFlagPath) {
+                Save-KeeperState -Status "stopped" -Message "隧道守护进程已停止。"
+                Write-KeeperLog "隧道守护进程已停止。"
+                break
+            }
 
-        $retryMessage = "隧道已断开，准备自动重连。"
-        if ($exitCode -eq -1073741515 -or $exitCode -eq 3221225781) {
-            $retryMessage = "SSH 进程加载失败，可能缺少 VC++ 运行时库依赖 (0xC0000135)。准备自动重连。"
+            $retryMessage = "隧道已断开，准备自动重连。"
+            if ($exitCode -eq -1073741515 -or $exitCode -eq 3221225781) {
+                $retryMessage = "SSH 进程加载失败，可能缺少 VC++ 运行时库依赖 (0xC0000135)。准备自动重连。"
+            }
+            Write-KeeperLog ("ssh 进程已退出，退出码={0}。{1}" -f $exitCode, $retryMessage)
+            Save-KeeperState -Status "retrying" -Message $retryMessage
+            Start-Sleep -Seconds $RetrySeconds
         }
-        Write-KeeperLog ("ssh 进程已退出，退出码={0}。{1}" -f $exitCode, $retryMessage)
-        Save-KeeperState -Status "retrying" -Message $retryMessage
-        Start-Sleep -Seconds $RetrySeconds
+    } catch {
+        Write-KeeperLog ("守护进程发生致命异常：{0}`n{1}" -f $_.Exception.Message, $_.ScriptStackTrace)
+        Save-KeeperState -Status "failed" -Message $_.Exception.Message
+        exit 1
     }
 
     exit 0

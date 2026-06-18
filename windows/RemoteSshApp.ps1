@@ -720,9 +720,9 @@ try {
     $workerArgs = @(
         "-NoProfile",
         "-ExecutionPolicy", "Bypass",
-        "-File", ('"{0}"' -f $workerPath),
-        "-ConfigPath", ('"{0}"' -f $ConfigPath),
-        "-RuntimeRoot", ('"{0}"' -f $runtimeRoot),
+        "-File", $workerPath,
+        "-ConfigPath", $ConfigPath,
+        "-RuntimeRoot", $runtimeRoot,
         "-SessionId", $sessionId
     )
 
