@@ -40,6 +40,24 @@ function Get-ContentRaw {
     return [System.IO.File]::ReadAllText($Path)
 }
 
+function Get-LastLines {
+    param(
+        [string]$Path,
+        [int]$Count = 10
+    )
+    if (-not (Test-Path -LiteralPath $Path)) { return "" }
+    try {
+        $lines = @(Get-Content -LiteralPath $Path -ErrorAction SilentlyContinue)
+        $total = $lines.Count
+        if ($total -eq 0) { return "" }
+        $start = if ($total -gt $Count) { $total - $Count } else { 0 }
+        $subset = $lines[$start..($total - 1)]
+        return $subset -join "`n"
+    } catch {
+        return ""
+    }
+}
+
 function Safe-WriteAllText {
     param([string]$Path, [string]$Content)
     try {
@@ -398,6 +416,44 @@ function Get-OpenSshExecutablePath {
     }
 
     return $Name
+}
+
+function Ensure-SshDependencies {
+    param([string]$ExePath)
+    try {
+        if ([string]::IsNullOrEmpty($ExePath)) { return }
+        $exeDir = Split-Path -Parent -Path $ExePath
+        if (-not (Test-Path -LiteralPath $exeDir)) { return }
+
+        $is64 = $false
+        try {
+            $is64 = [Environment]::Is64BitOperatingSystem
+        } catch {}
+        if ($null -eq $is64 -or -not $is64) {
+            $is64 = ($env:PROCESSOR_ARCHITECTURE -eq "AMD64") -or ($env:PROCESSOR_ARCHITEW6432 -eq "AMD64")
+        }
+        $dllSuffix = if ($is64) { "x64" } else { "x86" }
+        
+        $depDir = Join-Path $PSScriptRoot "dep"
+        
+        $dlls = @("vcruntime140.dll", "msvcp140.dll")
+        foreach ($dllName in $dlls) {
+            $targetDllPath = Join-Path $exeDir $dllName
+            if (-not (Test-Path -LiteralPath $targetDllPath)) {
+                $baseName = [System.IO.Path]::GetFileNameWithoutExtension($dllName)
+                $srcDllName = $baseName + "_" + $dllSuffix + ".dll"
+                $srcDllPath = Join-Path $depDir $srcDllName
+                if (Test-Path -LiteralPath $srcDllPath) {
+                    Write-Log "info [ssh] copying missing dependency $dllName from $srcDllPath to $targetDllPath..."
+                    Copy-Item -LiteralPath $srcDllPath -Destination $targetDllPath -Force
+                } else {
+                    Write-Log "warning [ssh] source dependency file not found: $srcDllPath"
+                }
+            }
+        }
+    } catch {
+        Write-Log "warning [ssh] failed to verify or copy VC++ runtime dependencies: $($_.Exception.Message)"
+    }
 }
 
 function Get-ConfigValue {
@@ -867,9 +923,66 @@ function Ensure-DeviceKey {
                 Set-Content -LiteralPath ($keyPath + ".pub") -Value "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDryRunDeviceKey remote-ssh-relay" -Encoding ascii
             } else {
                 $keygenExe = Get-OpenSshExecutablePath -Name "ssh-keygen.exe"
-                & $keygenExe -q -t ed25519 -N "" -f $keyPath | Out-Null
-                if ($LASTEXITCODE -ne 0) {
-                    throw "生成设备密钥时 ssh-keygen 执行失败。"
+                Write-Log "info [ssh] using ssh-keygen path: $keygenExe"
+                Ensure-SshDependencies -ExePath $keygenExe
+
+                # 尝试生成 ed25519 密钥
+                Write-Log "info [ssh] generating ed25519 device key..."
+                $exitCode = -1
+                $stdOutErr = ""
+                try {
+                    $pinfo = New-Object System.Diagnostics.ProcessStartInfo
+                    $pinfo.FileName = $keygenExe
+                    # 用 -q 静默且不提示，-N "" 空密码，-f 指定路径，-t 类型
+                    $pinfo.Arguments = "-q -t ed25519 -N `"`" -f `"$keyPath`""
+                    $pinfo.RedirectStandardOutput = $true
+                    $pinfo.RedirectStandardError = $true
+                    $pinfo.UseShellExecute = $false
+                    $pinfo.CreateNoWindow = $true
+                    $proc = [System.Diagnostics.Process]::Start($pinfo)
+                    $stdout = $proc.StandardOutput.ReadToEnd()
+                    $stderr = $proc.StandardError.ReadToEnd()
+                    $proc.WaitForExit()
+                    $exitCode = $proc.ExitCode
+                    $stdOutErr = ("Stdout: {0}`nStderr: {1}" -f $stdout, $stderr).Trim()
+                    Write-Log "info [ssh] ssh-keygen ed25519 exit code: $exitCode. Output:`n$stdOutErr"
+                } catch {
+                    $exitCode = -1
+                    $stdOutErr = $_.Exception.Message
+                    Write-Log "error [ssh] failed to launch ssh-keygen for ed25519: $stdOutErr"
+                }
+
+                # 如果 ed25519 失败，退避尝试生成 rsa 2048 密钥
+                if ($exitCode -ne 0) {
+                    Write-Log "warning [ssh] ed25519 key generation failed, attempting RSA fallback..."
+                    # 清理可能生成的半成品文件
+                    if (Test-Path -LiteralPath $keyPath) { try { Remove-Item -LiteralPath $keyPath -Force } catch {} }
+                    if (Test-Path -LiteralPath ($keyPath + ".pub")) { try { Remove-Item -LiteralPath ($keyPath + ".pub") -Force } catch {} }
+
+                    try {
+                        $pinfo = New-Object System.Diagnostics.ProcessStartInfo
+                        $pinfo.FileName = $keygenExe
+                        $pinfo.Arguments = "-q -t rsa -b 2048 -N `"`" -f `"$keyPath`""
+                        $pinfo.RedirectStandardOutput = $true
+                        $pinfo.RedirectStandardError = $true
+                        $pinfo.UseShellExecute = $false
+                        $pinfo.CreateNoWindow = $true
+                        $proc = [System.Diagnostics.Process]::Start($pinfo)
+                        $stdout = $proc.StandardOutput.ReadToEnd()
+                        $stderr = $proc.StandardError.ReadToEnd()
+                        $proc.WaitForExit()
+                        $exitCode = $proc.ExitCode
+                        $stdOutErr = ("Stdout: {0}`nStderr: {1}" -f $stdout, $stderr).Trim()
+                        Write-Log "info [ssh] ssh-keygen rsa exit code: $exitCode. Output:`n$stdOutErr"
+                    } catch {
+                        $exitCode = -1
+                        $stdOutErr = $_.Exception.Message
+                        Write-Log "error [ssh] failed to launch ssh-keygen for rsa fallback: $stdOutErr"
+                    }
+                }
+
+                if ($exitCode -ne 0) {
+                    throw ("生成设备密钥失败。ssh-keygen 退出码: {0}。错误详情:`n{1}" -f $exitCode, $stdOutErr)
                 }
             }
         }
@@ -909,10 +1022,13 @@ function Ensure-AuthorizedKey {
             }
             try {
                 & icacls.exe $adminAuthPath /inheritance:r | Out-Null
-                & icacls.exe $adminAuthPath /grant "Administrators:F" "SYSTEM:F" | Out-Null
-                Write-Log "info [ssh] successfully updated ACL permissions for administrators_authorized_keys"
+                # 使用语言无关的安全标识符 (SID) 进行授权，防止非英文系统（如中文系统的“管理员”）报错：
+                # *S-1-5-32-544 是 Built-in Administrators 组的 SID
+                # *S-1-5-18 是 Local System (SYSTEM) 账号的 SID
+                & icacls.exe $adminAuthPath /grant "*S-1-5-32-544:F" "*S-1-5-18:F" | Out-Null
+                Write-Log "info [ssh] successfully updated ACL permissions using SIDs for administrators_authorized_keys"
             } catch {
-                Write-Log "warning [ssh] failed to update ACL permissions using icacls: $($_.Exception.Message)"
+                Write-Log "warning [ssh] failed to update ACL permissions using SIDs: $($_.Exception.Message)"
             }
         }
         Set-StepState -Id "write_authorized_keys" -State "success" -Message "管理员公钥已写入。"
@@ -986,6 +1102,13 @@ function Start-ReverseTunnel {
         [psobject]$EnrollResponse,
         [string]$DeviceKeyPath
     )
+    if ($null -eq $EnrollResponse) {
+        throw "中转服务器返回了空的注册响应。"
+    }
+    if ([string]::IsNullOrEmpty($EnrollResponse.relay_host) -or [string]::IsNullOrEmpty($EnrollResponse.remote_port)) {
+        throw "中转服务器返回的响应缺少中转地址 (relay_host) 或外部端口 (remote_port)。"
+    }
+
     $keeperPidPath = Join-Path $script:RuntimeRoot "tunnel-keeper.pid"
     $keeperLogPath = Join-Path $script:RuntimeRoot "tunnel-keeper.log"
     $statePath = Join-Path $script:RuntimeRoot "tunnel-state.json"
@@ -1054,17 +1177,18 @@ function Start-ReverseTunnel {
 
         if (-not $connected) {
             $keeperProc.Refresh()
-            $keeperLogText = if (Test-Path -LiteralPath $keeperLogPath) { ((Get-ContentRaw -Path $keeperLogPath)).Trim() } else { "" }
+            $keeperLogText = Get-LastLines -Path $keeperLogPath -Count 15
+            $stderrLogText = Get-LastLines -Path (Join-Path $script:RuntimeRoot "tunnel.stderr.log") -Count 15
+            
+            $errDetails = ("守护日志：`n{0}" -f $keeperLogText).Trim()
+            if (($stderrLogText -match "\S")) {
+                $errDetails += ("`n`nSSH 错误日志：`n{0}" -f $stderrLogText).Trim()
+            }
+            
             if ($keeperProc.HasExited) {
-                if ((($keeperLogText) -match "^\s*$")) {
-                    throw "隧道守护进程启动后立即退出。"
-                }
-                throw ("隧道守护进程启动后立即退出：{0}" -f $keeperLogText)
+                throw ("隧道守护进程启动后立即退出。错误详情：`n{0}" -f $errDetails)
             }
-            if ((($keeperLogText) -match "^\s*$")) {
-                throw "等待反向隧道就绪超时。"
-            }
-            throw ("等待反向隧道就绪超时：{0}" -f $keeperLogText)
+            throw ("等待反向隧道就绪超时。错误详情：`n{0}" -f $errDetails)
         }
 
         Set-StepState -Id "start_reverse_tunnel" -State "success" -Message "反向隧道已建立，守护进程正在运行。"
@@ -1081,17 +1205,34 @@ function Verify-Tunnel {
 
         $keeperPidPath = Join-Path $script:RuntimeRoot "tunnel-keeper.pid"
         $statePath = Join-Path $script:RuntimeRoot "tunnel-state.json"
-        $keeperPid = (Get-ContentRaw -Path $keeperPidPath)
-        $keeperProc = Get-Process -Id ([int]$keeperPid) -ErrorAction SilentlyContinue
+        
+        $keeperPidRaw = (Get-ContentRaw -Path $keeperPidPath).Trim()
+        $keeperPid = 0
+        if (-not [int]::TryParse($keeperPidRaw, [ref]$keeperPid)) {
+            $keeperPid = 0
+        }
+        $keeperProc = $null
+        if ($keeperPid -gt 0) {
+            $keeperProc = Get-Process -Id $keeperPid -ErrorAction SilentlyContinue
+        }
+
         if ($null -eq $keeperProc) {
-            throw "隧道守护进程已退出。"
+            $keeperLogText = Get-LastLines -Path (Join-Path $script:RuntimeRoot "tunnel-keeper.log") -Count 15
+            throw ("隧道守护进程已退出。最近守护日志：`n{0}" -f $keeperLogText)
         }
         if (-not (Test-Path -LiteralPath $statePath)) {
             throw "缺少隧道状态文件。"
         }
         $state = (Get-ContentRaw -Path $statePath) | ConvertFrom-Json
         if ($state.status -ne "connected") {
-            throw ("隧道当前未连接，当前状态：{0}" -f $state.status)
+            $keeperLogText = Get-LastLines -Path (Join-Path $script:RuntimeRoot "tunnel-keeper.log") -Count 15
+            $stderrLogText = Get-LastLines -Path (Join-Path $script:RuntimeRoot "tunnel.stderr.log") -Count 15
+            
+            $errDetails = ("最近守护日志：`n{0}" -f $keeperLogText).Trim()
+            if (($stderrLogText -match "\S")) {
+                $errDetails += ("`n`nSSH 错误日志：`n{0}" -f $stderrLogText).Trim()
+            }
+            throw ("隧道当前未连接，当前状态：{0}。错误详情：`n{1}" -f $state.status, $errDetails)
         }
         Set-StepState -Id "verify_tunnel" -State "success" -Message "隧道守护进程正常，隧道已连接。"
     }
@@ -1179,6 +1320,9 @@ function Run-TunnelKeeperMode {
         Save-KeeperState -Status "connecting" -Message "正在建立反向 SSH 隧道。"
 
         $sshExe = Get-OpenSshExecutablePath -Name "ssh.exe"
+        Write-KeeperLog ("检测并准备 SSH 运行环境：{0}" -f $sshExe)
+        Ensure-SshDependencies -ExePath $sshExe
+
         $proc = Start-Process -FilePath $sshExe -ArgumentList $sshArgs -PassThru -WindowStyle Hidden -RedirectStandardOutput $runStdoutPath -RedirectStandardError $runStderrPath
         Start-Sleep -Seconds 3
         $proc.Refresh()
@@ -1208,6 +1352,9 @@ function Run-TunnelKeeperMode {
         }
 
         $retryMessage = "隧道已断开，准备自动重连。"
+        if ($exitCode -eq -1073741515 -or $exitCode -eq 3221225781) {
+            $retryMessage = "SSH 进程加载失败，可能缺少 VC++ 运行时库依赖 (0xC0000135)。准备自动重连。"
+        }
         Write-KeeperLog ("ssh 进程已退出，退出码={0}。{1}" -f $exitCode, $retryMessage)
         Save-KeeperState -Status "retrying" -Message $retryMessage
         Start-Sleep -Seconds $RetrySeconds

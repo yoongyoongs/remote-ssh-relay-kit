@@ -260,6 +260,29 @@ function Install-Win32OpenSSH-Fallback {
     Write-InstallLog "正在复制 OpenSSH 二进制文件至安装路径 $destDir..."
     Copy-Item -Path (Join-Path $extractedFolder "*") -Destination $destDir -Force -Recurse
 
+    # 复制 VC++ 运行时 DLL 以解决 Windows 7 缺失依赖导致程序崩溃的问题
+    $dllSuffix = if ($is64) { "x64" } else { "x86" }
+    $depDir = Join-Path $script:PSScriptRoot "dep"
+    $vcruntimeSrc = Join-Path $depDir "vcruntime140_$dllSuffix.dll"
+    $msvcpSrc = Join-Path $depDir "msvcp140_$dllSuffix.dll"
+
+    if (Test-Path -LiteralPath $vcruntimeSrc) {
+        Write-InstallLog "检测到内置 VC++ 运行时 vcruntime140_$dllSuffix.dll，正在复制到安装路径以解决加载依赖..."
+        try {
+            Copy-Item -LiteralPath $vcruntimeSrc -Destination (Join-Path $destDir "vcruntime140.dll") -Force
+        } catch {
+            Write-InstallLog "复制 vcruntime140.dll 失败：$($_.Exception.Message)" "WARN"
+        }
+    }
+    if (Test-Path -LiteralPath $msvcpSrc) {
+        Write-InstallLog "检测到内置 VC++ 运行时 msvcp140_$dllSuffix.dll，正在复制到安装路径以解决加载依赖..."
+        try {
+            Copy-Item -LiteralPath $msvcpSrc -Destination (Join-Path $destDir "msvcp140.dll") -Force
+        } catch {
+            Write-InstallLog "复制 msvcp140.dll 失败：$($_.Exception.Message)" "WARN"
+        }
+    }
+
     # 8. 运行安装脚本并进行服务兜底注册
     Write-InstallLog "正在调用 install-sshd.ps1 脚本注册 OpenSSH 服务..."
     $installScriptPath = Join-Path $destDir "install-sshd.ps1"
