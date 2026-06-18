@@ -183,7 +183,13 @@ if ($null -eq (Get-Command "ConvertTo-Json" -ErrorAction SilentlyContinue)) {
             function Safe-ConvertTo-Json-Fallback {
                 param($Obj)
                 if ($null -eq $Obj) { return "null" }
-                if ($Obj -is [bool]) { return if ($Obj) { "true" } else { "false" } }
+                if ($Obj -is [bool]) {
+                    if ($Obj) {
+                        return "true"
+                    } else {
+                        return "false"
+                    }
+                }
                 if ($Obj -is [ValueType] -and $Obj -isnot [bool]) { return $Obj.ToString() }
                 if ($Obj -is [string]) {
                     $escaped = $Obj -replace '\\', '\\\\' -replace '"', '\\"' -replace "\r?\n", " "
