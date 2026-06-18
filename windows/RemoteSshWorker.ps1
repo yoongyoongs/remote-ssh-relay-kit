@@ -1380,7 +1380,7 @@ function Run-TunnelKeeperMode {
             Write-KeeperLog ("检测并准备 SSH 运行环境：{0}" -f $sshExe)
             Ensure-SshDependencies -ExePath $sshExe
 
-            $proc = Start-Process -FilePath $sshExe -ArgumentList $sshArgs -PassThru -WindowStyle Hidden -RedirectStandardOutput $runStdoutPath -RedirectStandardError $runStderrPath
+            $proc = Start-Process -FilePath $sshExe -ArgumentList $sshArgs -PassThru -NoNewWindow -RedirectStandardOutput $runStdoutPath -RedirectStandardError $runStderrPath
             Start-Sleep -Seconds 3
             $proc.Refresh()
 

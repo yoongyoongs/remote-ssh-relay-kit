@@ -75,7 +75,7 @@ function Run-DismFallback {
     if ($null -eq (Get-Command "dism.exe" -ErrorAction SilentlyContinue)) {
         throw "当前系统找不到 DISM.exe，无法自动安装 OpenSSH Server。"
     }
-    $proc = Start-Process -FilePath "dism.exe" -ArgumentList $args -PassThru -Wait -WindowStyle Hidden -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+    $proc = Start-Process -FilePath "dism.exe" -ArgumentList $args -PassThru -Wait -NoNewWindow -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
     if (Test-Path -LiteralPath $stdoutPath) {
         foreach ($line in Get-Content -LiteralPath $stdoutPath) {
             if ((($line) -match "\S")) {

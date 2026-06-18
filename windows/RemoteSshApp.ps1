@@ -736,7 +736,7 @@ try {
             if ($showWorkerWindow) {
                 $workerProc = Start-Process -FilePath "powershell.exe" -ArgumentList $workerArgs -PassThru
             } else {
-                $workerProc = Start-Process -FilePath "powershell.exe" -ArgumentList $workerArgs -WindowStyle Hidden -RedirectStandardOutput $startupOutLog -RedirectStandardError $startupLog -PassThru
+                $workerProc = Start-Process -FilePath "powershell.exe" -ArgumentList $workerArgs -NoNewWindow -RedirectStandardOutput $startupOutLog -RedirectStandardError $startupLog -PassThru
             }
         } else {
             if ($showWorkerWindow) {
