@@ -806,7 +806,7 @@ try {
             }
         }
 
-        $detailLogPath = if ($null -ne $status -and $status.detail_log_path) { $status.detail_log_path } else { Join-Path $runtimeRoot "worker.log" }
+        $detailLogPath = $(if ($null -ne $status -and $status.detail_log_path) { $status.detail_log_path } else { Join-Path $runtimeRoot "worker.log" })
         if (($null -eq $status) -and -not (Test-Path -LiteralPath $detailLogPath) -and (Test-Path -LiteralPath $startupLog)) {
             $detailLogPath = $startupLog
         }
@@ -821,7 +821,7 @@ try {
             Write-ConsoleLine "  正在等待日志输出..." -ForegroundColor DarkGray
         } else {
             foreach ($line in $detailLines) {
-                $trimmedLine = if ($line.Length -gt 74) { $line.Substring(0, 71) + "..." } else { $line }
+                $trimmedLine = $(if ($line.Length -gt 74) { $line.Substring(0, 71) + "..." } else { $line })
                 Write-ConsoleLine "  $trimmedLine" -ForegroundColor DarkGray
             }
         }

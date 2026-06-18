@@ -106,7 +106,7 @@ function Install-Win32OpenSSH-Fallback {
     if ($null -eq $is64) {
         $is64 = ($env:PROCESSOR_ARCHITECTURE -eq "AMD64") -or ($env:PROCESSOR_ARCHITEW6432 -eq "AMD64")
     }
-    $archText = if ($is64) { "64位 (x64)" } else { "32位 (x86)" }
+    $archText = $(if ($is64) { "64位 (x64)" } else { "32位 (x86)" })
     Write-InstallLog "系统架构检测：$archText"
 
     # 3. 停止已有的 sshd 和 ssh-agent 服务，避免文件被占用导致复制失败
@@ -149,7 +149,7 @@ function Install-Win32OpenSSH-Fallback {
     }
 
     # 5. 获取本地离线安装包路径
-    $localZipName = if ($is64) { "OpenSSH-Win64.zip" } else { "OpenSSH-Win32.zip" }
+    $localZipName = $(if ($is64) { "OpenSSH-Win64.zip" } else { "OpenSSH-Win32.zip" })
     $localZipPath = Join-Path (Join-Path $script:PSScriptRoot "dep") $localZipName
     
     $tempZip = Join-Path $env:TEMP "OpenSSH.zip"
@@ -261,7 +261,7 @@ function Install-Win32OpenSSH-Fallback {
     Copy-Item -Path (Join-Path $extractedFolder "*") -Destination $destDir -Force -Recurse
 
     # 复制 VC++ 运行时 DLL 以解决 Windows 7 缺失依赖导致程序崩溃的问题
-    $dllSuffix = if ($is64) { "x64" } else { "x86" }
+    $dllSuffix = $(if ($is64) { "x64" } else { "x86" })
     $depDir = Join-Path $script:PSScriptRoot "dep"
     $vcruntimeSrc = Join-Path $depDir "vcruntime140_$dllSuffix.dll"
     $msvcpSrc = Join-Path $depDir "msvcp140_$dllSuffix.dll"
