@@ -380,6 +380,7 @@ if ($null -eq (Get-Command "Test-NetConnection" -ErrorAction SilentlyContinue)) 
     }
 }
 
+
 function Read-IniFile {
     param([string]$Path)
     $map = @{}
@@ -717,14 +718,7 @@ try {
         }
     }
 
-    $workerArgs = @(
-        "-NoProfile",
-        "-ExecutionPolicy", "Bypass",
-        "-File", $workerPath,
-        "-ConfigPath", $ConfigPath,
-        "-RuntimeRoot", $runtimeRoot,
-        "-SessionId", $sessionId
-    )
+    $workerArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$workerPath`" -ConfigPath `"$ConfigPath`" -RuntimeRoot `"$runtimeRoot`" -SessionId $sessionId"
 
     $startupLog = Join-Path $runtimeRoot "worker-startup.log"
     $startupOutLog = Join-Path $runtimeRoot "worker-startup.out.log"

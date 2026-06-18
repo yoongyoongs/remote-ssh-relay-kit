@@ -325,7 +325,7 @@ function Install-Win32OpenSSH-Fallback {
     # 再次验证服务是否已经存在
     $service = Get-Service -Name sshd -ErrorAction SilentlyContinue
     if ($null -eq $service) {
-        $logDetails = Get-Content -LiteralPath $installOutputLog -Raw
+        $logDetails = (Get-ContentRaw -Path $installOutputLog)
         throw "sshd 服务注册失败，无法建立系统服务。详细安装日志：$logDetails"
     }
 

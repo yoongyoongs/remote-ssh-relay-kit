@@ -16,6 +16,13 @@
 
 $ErrorActionPreference = "Stop"
 
+if (-not $PSScriptRoot) {
+    $PSScriptRoot = Split-Path -Parent -Path $MyInvocation.MyCommand.Path
+}
+if (-not $PSCommandPath) {
+    $PSCommandPath = $MyInvocation.MyCommand.Path
+}
+
 try {
     [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType](3072 -bor 768 -bor 192)
 } catch {}
@@ -367,6 +374,7 @@ if ($null -eq (Get-Command "Test-NetConnection" -ErrorAction SilentlyContinue)) 
         return New-Object PSObject -Property @{ TcpTestSucceeded = $connected }
     }
 }
+
 
 function Read-IniFile {
     param([string]$Path)
@@ -768,18 +776,13 @@ function Ensure-ServiceInstalled {
             }
 
             Set-DetailLogPath -Path $installLogPath
-            $installerArgs = @(
-                "-NoProfile",
-                "-ExecutionPolicy", "Bypass",
-                "-File", $installerScript,
-                "-LogPath", $installLogPath
-            )
+            $installerArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$installerScript`" -LogPath `"$installLogPath`""
 
             $installer = $null
             if ($mode -eq "cmd") {
                 $cmdArgs = @(
                     "/c",
-                    ('title OpenSSH Installer && powershell.exe {0}' -f ($installerArgs -join " "))
+                    ('title OpenSSH Installer && powershell.exe {0}' -f $installerArgs)
                 )
                 $installer = Start-Process -FilePath "cmd.exe" -ArgumentList $cmdArgs -PassThru
             } else {
@@ -1191,22 +1194,7 @@ function Start-ReverseTunnel {
         }
 
         $keeperScript = $PSCommandPath
-        $keeperArgs = @(
-            "-NoProfile",
-            "-ExecutionPolicy", "Bypass",
-            "-File", $keeperScript,
-            "-Mode", "tunnel_keeper",
-            "-RuntimeRoot", $script:RuntimeRoot,
-            "-DeviceKeyPath", $DeviceKeyPath,
-            "-RelayHost", $EnrollResponse.relay_host,
-            "-RelaySshPort", "$($EnrollResponse.relay_ssh_port)",
-            "-RelayUser", $EnrollResponse.relay_user,
-            "-RemoteBindAddress", $EnrollResponse.tunnel_options.remote_bind_address,
-            "-RemotePort", "$($EnrollResponse.remote_port)",
-            "-LocalHost", $EnrollResponse.tunnel_options.local_host,
-            "-LocalPort", "$($EnrollResponse.tunnel_options.local_port)",
-            "-RetrySeconds", "$retrySeconds"
-        )
+        $keeperArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$keeperScript`" -Mode tunnel_keeper -RuntimeRoot `"$($script:RuntimeRoot)`" -DeviceKeyPath `"$DeviceKeyPath`" -RelayHost `"$($EnrollResponse.relay_host)`" -RelaySshPort $($EnrollResponse.relay_ssh_port) -RelayUser `"$($EnrollResponse.relay_user)`" -RemoteBindAddress `"$($EnrollResponse.tunnel_options.remote_bind_address)`" -RemotePort $($EnrollResponse.remote_port) -LocalHost `"$($EnrollResponse.tunnel_options.local_host)`" -LocalPort $($EnrollResponse.tunnel_options.local_port) -RetrySeconds $retrySeconds"
 
         $keeperProc = Start-Process -FilePath "powershell.exe" -ArgumentList $keeperArgs -PassThru -WindowStyle Hidden
         Set-Content -LiteralPath $keeperPidPath -Value $keeperProc.Id -Encoding ascii
@@ -1354,18 +1342,7 @@ function Run-TunnelKeeperMode {
         Set-Content -LiteralPath $script:StderrLogPath -Value "" -Encoding utf8
     }
 
-    $sshArgs = @(
-        "-N",
-        "-o", "ExitOnForwardFailure=yes",
-        "-o", "ServerAliveInterval=30",
-        "-o", "ServerAliveCountMax=3",
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=NUL",
-        "-i", $DeviceKeyPath,
-        "-p", "$RelaySshPort",
-        "-R", "$RemoteBindAddress`:$RemotePort`:$LocalHost`:$LocalPort",
-        "$RelayUser@$RelayHost"
-    )
+    $sshArgs = "-N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL -i \"`$DeviceKeyPath\" -p `$RelaySshPort -R \"`$RemoteBindAddress`:`$RemotePort`:`$LocalHost`:`$LocalPort\" `$RelayUser@`$RelayHost"
 
     try {
         while (-not (Test-Path -LiteralPath $stopFlagPath)) {
