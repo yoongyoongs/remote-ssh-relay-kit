@@ -1158,6 +1158,16 @@ function Enroll-Device {
                 -Body ($body | ConvertTo-Json)
         }
 
+        if ($null -eq $response -or $response.ok -ne $true) {
+            $errMessage = "注册失败。"
+            if ($null -ne $response -and -not [string]::IsNullOrEmpty($response.message)) {
+                $errMessage = "注册失败：$($response.message)"
+            } elseif ($null -ne $response -and -not [string]::IsNullOrEmpty($response.errorCode)) {
+                $errMessage = "注册失败：错误码 $($response.errorCode)"
+            }
+            throw $errMessage
+        }
+
         $response | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $responsePath -Encoding utf8
         Set-StepState -Id "enroll_device" -State "success" -Message "已成功注册到中转服务器。"
     }
@@ -1448,13 +1458,13 @@ try {
         steps = @(
             @{ id = "check_admin"; title = "Check administrator privileges"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
             @{ id = "validate_config"; title = "Validate config"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
-            @{ id = "fetch_connection_settings"; title = "Fetch connection settings"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
             @{ id = "check_openssh"; title = "Check OpenSSH Server"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
             @{ id = "install_openssh"; title = "Install OpenSSH Server"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
             @{ id = "start_sshd"; title = "Start sshd service"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
             @{ id = "configure_firewall"; title = "Configure Windows Firewall"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
             @{ id = "verify_local_ssh"; title = "Verify local SSH"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
             @{ id = "generate_device_key"; title = "Generate device key"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
+            @{ id = "fetch_connection_settings"; title = "Fetch connection settings"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
             @{ id = "write_authorized_keys"; title = "Write admin public key"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
             @{ id = "enroll_device"; title = "Register with relay server"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
             @{ id = "start_reverse_tunnel"; title = "Start reverse SSH tunnel"; status = "pending"; message = "Waiting"; started_at = $null; finished_at = $null },
@@ -1476,12 +1486,12 @@ try {
     }
 
     Validate-Config -Config $config
-    Resolve-ConnectionSettings -Config $config
     Ensure-ServiceInstalled
     Ensure-SshdRunning
     Ensure-FirewallRule
     Verify-LocalSsh
     $deviceKeyPath = Ensure-DeviceKey
+    Resolve-ConnectionSettings -Config $config
     Ensure-AuthorizedKey
     $enrollResponse = Enroll-Device -Config $config -DeviceKeyPath $deviceKeyPath
     Start-ReverseTunnel -EnrollResponse $enrollResponse -DeviceKeyPath $deviceKeyPath

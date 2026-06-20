@@ -74,6 +74,13 @@ if [ -z "$ENROLL_CODE" ] || [ "$ENROLL_CODE" = "CHANGE-ME" ] || [ -z "$ADMIN_PUB
     PAYLOAD="$(printf '{"bootstrap_token":"%s","device_name":"%s","os_type":"macos","local_user":"%s","launcher_version":"0.1.0"}' "$BOOTSTRAP_TOKEN" "$DEVICE_NAME" "$LOCAL_USER")"
     RESPONSE="$(curl -fsSL -X POST -H 'Content-Type: application/json' -d "$PAYLOAD" "$BOOTSTRAP_API")"
     
+    OK_STATUS="$(printf '%s' "$RESPONSE" | json_get ok | tr '[:upper:]' '[:lower:]')"
+    if [ "$OK_STATUS" != "true" ]; then
+      ERROR_MSG="$(printf '%s' "$RESPONSE" | json_get message)"
+      printf '获取连接配置失败: %s\n' "$ERROR_MSG" >&2
+      exit 1
+    fi
+    
     ENROLL_CODE="$(printf '%s' "$RESPONSE" | json_get enroll_code)"
     ADMIN_PUBLIC_KEY="$(printf '%s' "$RESPONSE" | json_get admin_public_key)"
     
@@ -139,6 +146,13 @@ if [ "$DRY_RUN" = "true" ]; then
 else
   PAYLOAD="$(printf '{"enroll_code":"%s","device_id":"%s","device_name":"%s","device_public_key":"%s","os_type":"macos","local_user":"%s","ssh_ready":true,"launcher_version":"0.1.0"}' "$ENROLL_CODE" "$DEVICE_ID" "$DEVICE_NAME" "$PUBLIC_KEY" "$LOCAL_USER")"
   RESPONSE="$(curl -fsSL -X POST -H 'Content-Type: application/json' -d "$PAYLOAD" "$ENROLL_API")"
+  
+  OK_STATUS="$(printf '%s' "$RESPONSE" | json_get ok | tr '[:upper:]' '[:lower:]')"
+  if [ "$OK_STATUS" != "true" ]; then
+    ERROR_MSG="$(printf '%s' "$RESPONSE" | json_get message)"
+    printf '设备注册失败: %s\n' "$ERROR_MSG" >&2
+    exit 1
+  fi
 fi
 
 if [ "$DRY_RUN" = "true" ]; then
