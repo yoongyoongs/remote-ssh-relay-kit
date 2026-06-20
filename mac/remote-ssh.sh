@@ -133,7 +133,11 @@ fi
 step "[5/7] 写入管理员公钥"
 mkdir -p "${HOME}/.ssh"
 touch "${HOME}/.ssh/authorized_keys"
-grep -qxF "$ADMIN_PUBLIC_KEY" "${HOME}/.ssh/authorized_keys" || printf '%s\n' "$ADMIN_PUBLIC_KEY" >> "${HOME}/.ssh/authorized_keys"
+printf '%s\n' "$ADMIN_PUBLIC_KEY" | while read -r key; do
+  if [ -n "$key" ]; then
+    grep -qxF "$key" "${HOME}/.ssh/authorized_keys" || printf '%s\n' "$key" >> "${HOME}/.ssh/authorized_keys"
+  fi
+done
 
 step "[6/7] 向中转服务器注册设备"
 DEVICE_ID="mac-$(make_device_id)"

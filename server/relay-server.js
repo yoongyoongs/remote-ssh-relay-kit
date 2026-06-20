@@ -21,7 +21,7 @@ const CONFIG = {
       .map(function (value) { return value.trim(); })
       .filter(Boolean),
   ),
-  adminPublicKey: (process.env.ADMIN_PUBLIC_KEY || "").trim(),
+  adminPublicKey: (process.env.ADMIN_PUBLIC_KEY || "").replace(/\\n/g, "\n").trim(),
   portStart: Number(process.env.PORT_RANGE_START || 24000),
   portEnd: Number(process.env.PORT_RANGE_END || 24999),
   statePath: process.env.STATE_PATH || path.join(__dirname, "state", "devices.json"),

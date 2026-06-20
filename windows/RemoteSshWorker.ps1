@@ -1052,6 +1052,8 @@ function Ensure-AuthorizedKey {
             throw "服务器没有提供有效的管理员公钥。"
         }
 
+        $adminKeys = $adminKey -split '\r?\n'
+
         $sshDir = Join-Path $env:USERPROFILE ".ssh"
         $authPath = Join-Path $sshDir "authorized_keys"
         New-Item -ItemType Directory -Force -Path $sshDir | Out-Null
@@ -1059,8 +1061,10 @@ function Ensure-AuthorizedKey {
             New-Item -ItemType File -Force -Path $authPath | Out-Null
         }
         $content = Get-Content -LiteralPath $authPath -ErrorAction SilentlyContinue
-        if ($content -notcontains $adminKey) {
-            Add-Content -LiteralPath $authPath -Value $adminKey -Encoding utf8
+        foreach ($key in $adminKeys) {
+            if (-not [string]::IsNullOrEmpty($key.Trim()) -and $content -notcontains $key) {
+                Add-Content -LiteralPath $authPath -Value $key -Encoding utf8
+            }
         }
 
         if (-not $script:DryRun) {
@@ -1071,8 +1075,10 @@ function Ensure-AuthorizedKey {
                 New-Item -ItemType File -Force -Path $adminAuthPath | Out-Null
             }
             $adminContent = Get-Content -LiteralPath $adminAuthPath -ErrorAction SilentlyContinue
-            if ($adminContent -notcontains $adminKey) {
-                Add-Content -LiteralPath $adminAuthPath -Value $adminKey -Encoding utf8
+            foreach ($key in $adminKeys) {
+                if (-not [string]::IsNullOrEmpty($key.Trim()) -and $adminContent -notcontains $key) {
+                    Add-Content -LiteralPath $adminAuthPath -Value $key -Encoding utf8
+                }
             }
             try {
                 & icacls.exe $adminAuthPath /inheritance:r | Out-Null
