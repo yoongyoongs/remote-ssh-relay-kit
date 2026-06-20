@@ -1081,6 +1081,7 @@ function Ensure-AuthorizedKey {
                 }
             }
             try {
+                & icacls.exe $adminAuthPath /setowner "*S-1-5-32-544" | Out-Null
                 & icacls.exe $adminAuthPath /inheritance:r | Out-Null
                 # 使用语言无关的安全标识符 (SID) 进行授权，防止非英文系统（如中文系统的“管理员”）报错：
                 # *S-1-5-32-544 是 Built-in Administrators 组的 SID
