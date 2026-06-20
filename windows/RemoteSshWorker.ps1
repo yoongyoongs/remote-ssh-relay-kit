@@ -1060,11 +1060,31 @@ function Ensure-AuthorizedKey {
         if (-not (Test-Path -LiteralPath $authPath)) {
             New-Item -ItemType File -Force -Path $authPath | Out-Null
         }
+
+        # 清洗已有文件的 BOM 编码污染
+        if (Test-Path -LiteralPath $authPath) {
+            try {
+                $rawText = [System.IO.File]::ReadAllText($authPath)
+                [System.IO.File]::WriteAllText($authPath, $rawText, [System.Text.Encoding]::ASCII)
+            } catch {}
+        }
+
         $content = Get-Content -LiteralPath $authPath -ErrorAction SilentlyContinue
         foreach ($key in $adminKeys) {
             if (-not [string]::IsNullOrEmpty($key.Trim()) -and $content -notcontains $key) {
-                Add-Content -LiteralPath $authPath -Value $key -Encoding utf8
+                Add-Content -LiteralPath $authPath -Value $key -Encoding ascii
             }
+        }
+
+        # 普通用户 authorized_keys 严格权限控制
+        try {
+            $userSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+            & icacls.exe $authPath /setowner "*$userSid" | Out-Null
+            & icacls.exe $authPath /inheritance:r | Out-Null
+            & icacls.exe $authPath /grant "*$userSid:F" "*S-1-5-18:F" | Out-Null
+            Write-Log "info [ssh] successfully updated ACL permissions using user SID for authorized_keys"
+        } catch {
+            Write-Log "warning [ssh] failed to update ACL permissions for authorized_keys: $($_.Exception.Message)"
         }
 
         if (-not $script:DryRun) {
@@ -1074,19 +1094,31 @@ function Ensure-AuthorizedKey {
             if (-not (Test-Path -LiteralPath $adminAuthPath)) {
                 New-Item -ItemType File -Force -Path $adminAuthPath | Out-Null
             }
+
+            # 清洗已有管理员授权文件的 BOM 编码污染
+            if (Test-Path -LiteralPath $adminAuthPath) {
+                try {
+                    $rawText = [System.IO.File]::ReadAllText($adminAuthPath)
+                    [System.IO.File]::WriteAllText($adminAuthPath, $rawText, [System.Text.Encoding]::ASCII)
+                } catch {}
+            }
+
             $adminContent = Get-Content -LiteralPath $adminAuthPath -ErrorAction SilentlyContinue
             foreach ($key in $adminKeys) {
                 if (-not [string]::IsNullOrEmpty($key.Trim()) -and $adminContent -notcontains $key) {
-                    Add-Content -LiteralPath $adminAuthPath -Value $key -Encoding utf8
+                    Add-Content -LiteralPath $adminAuthPath -Value $key -Encoding ascii
                 }
             }
+
+            # 管理员组 administrators_authorized_keys 严格权限与 Owner 设置
             try {
+                $userSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
                 & icacls.exe $adminAuthPath /setowner "*S-1-5-32-544" | Out-Null
                 & icacls.exe $adminAuthPath /inheritance:r | Out-Null
-                # 使用语言无关的安全标识符 (SID) 进行授权，防止非英文系统（如中文系统的“管理员”）报错：
-                # *S-1-5-32-544 是 Built-in Administrators 组的 SID
-                # *S-1-5-18 是 Local System (SYSTEM) 账号的 SID
                 & icacls.exe $adminAuthPath /grant "*S-1-5-32-544:F" "*S-1-5-18:F" | Out-Null
+                & icacls.exe $adminAuthPath /remove "*$userSid" | Out-Null
+                & icacls.exe $adminAuthPath /remove "CREATOR OWNER" | Out-Null
+                & icacls.exe $adminAuthPath /remove "Everyone" | Out-Null
                 Write-Log "info [ssh] successfully updated ACL permissions using SIDs for administrators_authorized_keys"
             } catch {
                 Write-Log "warning [ssh] failed to update ACL permissions using SIDs: $($_.Exception.Message)"
