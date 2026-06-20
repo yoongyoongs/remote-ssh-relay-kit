@@ -574,11 +574,57 @@ function Set-StepState {
     Write-Log "$Id [$State] $Message"
 }
 
+function Upload-Logs-To-Relay {
+    try {
+        $sshLogs = @()
+        try {
+            $fifteenMinutesAgo = (Get-Date).AddMinutes(-15)
+            $events = Get-WinEvent -FilterHashtable @{
+                LogName = "OpenSSH/Operational"
+                StartTime = $fifteenMinutesAgo
+            } -ErrorAction SilentlyContinue
+            if ($events) {
+                $sshLogs += "--- [受控端 Windows OpenSSH 事件日志] ---"
+                foreach ($ev in $events) {
+                    $sshLogs += "[{0}] [{1}] {2}" -f $ev.TimeCreated.ToString("yyyy-MM-dd HH:mm:ss"), $ev.LevelDisplayName, $ev.Message
+                }
+            }
+        } catch {
+            $sshLogs += "（无法获取受控端 OpenSSH 事件日志：$($_.Exception.Message)）"
+        }
+
+        $workerLogText = ""
+        if (Test-Path -LiteralPath $script:LogPath) {
+            $workerLogText = [System.IO.File]::ReadAllText($script:LogPath)
+        }
+
+        $fullLogContent = $workerLogText + "`r`n`r`n" + ($sshLogs -join "`r`n")
+
+        $deviceId = "unknown"
+        if ($script:DeviceId) {
+            $deviceId = $script:DeviceId
+        } elseif ($env:COMPUTERNAME) {
+            $deviceId = "win-" + $env:COMPUTERNAME
+        }
+
+        $body = @{
+            device_id = $deviceId
+            log_content = $fullLogContent
+        }
+
+        if ($script:Config -and $script:Config.ContainsKey("ENROLL_API")) {
+            $logApi = $script:Config["ENROLL_API"].Replace("/api/enroll", "/api/log")
+            Invoke-RestMethod -Method Post -Uri $logApi -ContentType "application/json" -Body ($body | ConvertTo-Json) | Out-Null
+        }
+    } catch {}
+}
+
 function Finish-Run {
     param(
         [bool]$Ok,
         [hashtable]$Payload
     )
+    Upload-Logs-To-Relay
     if ($Ok) {
         $script:Status.overall_status = "success"
     } else {
@@ -1076,15 +1122,19 @@ function Ensure-AuthorizedKey {
             }
         }
 
-        # 普通用户 authorized_keys 严格权限控制
+        # 普通用户 .ssh 目录与 authorized_keys 严格权限控制
         try {
             $userSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+            & icacls.exe $sshDir /setowner "*$userSid" | Out-Null
+            & icacls.exe $sshDir /inheritance:r | Out-Null
+            & icacls.exe $sshDir /grant "*$userSid:F" "*S-1-5-18:F" | Out-Null
+
             & icacls.exe $authPath /setowner "*$userSid" | Out-Null
             & icacls.exe $authPath /inheritance:r | Out-Null
             & icacls.exe $authPath /grant "*$userSid:F" "*S-1-5-18:F" | Out-Null
-            Write-Log "info [ssh] successfully updated ACL permissions using user SID for authorized_keys"
+            Write-Log "info [ssh] successfully updated ACL permissions using user SID for .ssh directory and authorized_keys"
         } catch {
-            Write-Log "warning [ssh] failed to update ACL permissions for authorized_keys: $($_.Exception.Message)"
+            Write-Log "warning [ssh] failed to update ACL permissions: $($_.Exception.Message)"
         }
 
         if (-not $script:DryRun) {
@@ -1140,9 +1190,11 @@ function Enroll-Device {
             throw "服务器没有提供有效的注册码。"
         }
 
+        $deviceId = "win-" + ([System.Guid]::NewGuid().ToString("N").Substring(0, 8))
+        $script:DeviceId = $deviceId
         $body = @{
             enroll_code       = $enrollCode
-            device_id         = "win-" + ([System.Guid]::NewGuid().ToString("N").Substring(0, 8))
+            device_id         = $deviceId
             device_name       = $env:COMPUTERNAME
             device_public_key = ((Get-ContentRaw -Path ($DeviceKeyPath + ".pub"))).Trim()
             os_type           = "windows"

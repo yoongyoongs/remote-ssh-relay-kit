@@ -242,6 +242,19 @@ async function handleEnroll(request, response) {
   });
 }
 
+async function handleLog(request, response) {
+  const body = await readJsonBody(request);
+  if (!body.device_id || !body.log_content) {
+    return sendJson(response, 400, { ok: false, errorCode: "INVALID_REQUEST" });
+  }
+
+  const logsDir = path.join(path.dirname(CONFIG.statePath), "logs");
+  ensureDir(logsDir);
+  const logFile = path.join(logsDir, body.device_id + ".log");
+  fs.writeFileSync(logFile, body.log_content, "utf8");
+  return sendJson(response, 200, { ok: true });
+}
+
 async function handleBootstrap(request, response) {
   const body = await readJsonBody(request);
   if (!body.bootstrap_token) {
@@ -375,6 +388,12 @@ const server = http.createServer(function (request, response) {
     }
     if (request.method === "POST" && request.url === "/api/bootstrap") {
       Promise.resolve(handleBootstrap(request, response)).catch(function (error) {
+        handleRequestError(response, error);
+      });
+      return;
+    }
+    if (request.method === "POST" && request.url === "/api/log") {
+      Promise.resolve(handleLog(request, response)).catch(function (error) {
         handleRequestError(response, error);
       });
       return;
