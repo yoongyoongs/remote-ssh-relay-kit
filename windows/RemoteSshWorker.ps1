@@ -1150,7 +1150,12 @@ function Reset-FilePermissions {
 
     # 2. 强行夺取所有权
     try {
-        $takeownArgs = if ($IsDirectory) { @("/F", "`"$Path`"", "/R", "/D", "Y") } else { @("/F", "`"$Path`"", "/D", "Y") }
+        $takeownArgs = @()
+        if ($IsDirectory) {
+            $takeownArgs = @("/F", "`"$Path`"", "/R", "/D", "Y")
+        } else {
+            $takeownArgs = @("/F", "`"$Path`"", "/D", "Y")
+        }
         $pinfo = New-Object System.Diagnostics.ProcessStartInfo
         $pinfo.FileName = "takeown.exe"
         $pinfo.Arguments = $takeownArgs -join " "
@@ -1172,7 +1177,12 @@ function Reset-FilePermissions {
 
     # 3. 修改所有者与 ACL 授权
     try {
-        $icaclsSetOwnerArgs = if ($IsDirectory) { @("`"$Path`"", "/setowner", "*$OwnerSid", "/T") } else { @("`"$Path`"", "/setowner", "*$OwnerSid") }
+        $icaclsSetOwnerArgs = @()
+        if ($IsDirectory) {
+            $icaclsSetOwnerArgs = @("`"$Path`"", "/setowner", "*$OwnerSid", "/T")
+        } else {
+            $icaclsSetOwnerArgs = @("`"$Path`"", "/setowner", "*$OwnerSid")
+        }
         $pinfo = New-Object System.Diagnostics.ProcessStartInfo
         $pinfo.FileName = "icacls.exe"
         $pinfo.Arguments = $icaclsSetOwnerArgs -join " "
@@ -1187,7 +1197,12 @@ function Reset-FilePermissions {
             Write-Log "warning [ssh-acl] icacls setowner failed for $Path (exit: $($proc.ExitCode)): $stdErr"
         }
 
-        $icaclsGrantArgs = if ($IsDirectory) { @("`"$Path`"", "/grant", "*$OwnerSid:F", "/T") } else { @("`"$Path`"", "/grant", "*$OwnerSid:F") }
+        $icaclsGrantArgs = @()
+        if ($IsDirectory) {
+            $icaclsGrantArgs = @("`"$Path`"", "/grant", "*$OwnerSid:F", "/T")
+        } else {
+            $icaclsGrantArgs = @("`"$Path`"", "/grant", "*$OwnerSid:F")
+        }
         $pinfo.Arguments = $icaclsGrantArgs -join " "
         $proc = [System.Diagnostics.Process]::Start($pinfo)
         $proc.WaitForExit()
