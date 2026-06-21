@@ -1096,6 +1096,15 @@ function Safe-Append-Key {
         [string]$Path,
         [string]$Key
     )
+    # 写入前：强行清除可能存在的只读或隐藏属性
+    if (Test-Path -LiteralPath $Path) {
+        try {
+            $fileItem = Get-Item -LiteralPath $Path
+            if ($fileItem.Attributes -match "ReadOnly") {
+                $fileItem.Attributes = "Normal"
+            }
+        } catch {}
+    }
     for ($attempt = 1; $attempt -le 4; $attempt++) {
         try {
             $contentToAppend = $Key.Trim() + "`r`n"
@@ -1105,12 +1114,113 @@ function Safe-Append-Key {
             $writer.Write($contentToAppend)
             $writer.Close()
             $stream.Close()
-            return
+            return $true
         } catch {
             if ($attempt -eq 4) {
-                [System.IO.File]::AppendAllText($Path, ($Key.Trim() + "`r`n"), [System.Text.Encoding]::ASCII)
+                try {
+                    [System.IO.File]::AppendAllText($Path, ($Key.Trim() + "`r`n"), [System.Text.Encoding]::ASCII)
+                    return $true
+                } catch {
+                    return $false
+                }
             }
             Start-Sleep -Milliseconds 500
+        }
+    }
+    return $false
+}
+
+function Reset-FilePermissions {
+    param(
+        [string]$Path,
+        [string]$OwnerSid,
+        [bool]$IsDirectory = $false
+    )
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return
+    }
+
+    # 1. 强行清除属性
+    try {
+        $item = Get-Item -LiteralPath $Path
+        if ($item.Attributes -match "ReadOnly") {
+            $item.Attributes = "Normal"
+        }
+    } catch {}
+
+    # 2. 强行夺取所有权
+    try {
+        $takeownArgs = if ($IsDirectory) { @("/F", "`"$Path`"", "/R", "/D", "Y") } else { @("/F", "`"$Path`"", "/D", "Y") }
+        $pinfo = New-Object System.Diagnostics.ProcessStartInfo
+        $pinfo.FileName = "takeown.exe"
+        $pinfo.Arguments = $takeownArgs -join " "
+        $pinfo.RedirectStandardOutput = $true
+        $pinfo.RedirectStandardError = $true
+        $pinfo.UseShellExecute = $false
+        $pinfo.CreateNoWindow = $true
+        $proc = [System.Diagnostics.Process]::Start($pinfo)
+        $proc.WaitForExit()
+        $stdErr = $proc.StandardError.ReadToEnd()
+        if ($proc.ExitCode -ne 0) {
+            Write-Log "warning [ssh-acl] takeown failed for $Path (exit: $($proc.ExitCode)): $stdErr"
+        } else {
+            Write-Log "info [ssh-acl] takeown succeeded for $Path"
+        }
+    } catch {
+        Write-Log "warning [ssh-acl] takeown exception: $($_.Exception.Message)"
+    }
+
+    # 3. 修改所有者与 ACL 授权
+    try {
+        $icaclsSetOwnerArgs = if ($IsDirectory) { @("`"$Path`"", "/setowner", "*$OwnerSid", "/T") } else { @("`"$Path`"", "/setowner", "*$OwnerSid") }
+        $pinfo = New-Object System.Diagnostics.ProcessStartInfo
+        $pinfo.FileName = "icacls.exe"
+        $pinfo.Arguments = $icaclsSetOwnerArgs -join " "
+        $pinfo.RedirectStandardOutput = $true
+        $pinfo.RedirectStandardError = $true
+        $pinfo.UseShellExecute = $false
+        $pinfo.CreateNoWindow = $true
+        $proc = [System.Diagnostics.Process]::Start($pinfo)
+        $proc.WaitForExit()
+        $stdErr = $proc.StandardError.ReadToEnd()
+        if ($proc.ExitCode -ne 0) {
+            Write-Log "warning [ssh-acl] icacls setowner failed for $Path (exit: $($proc.ExitCode)): $stdErr"
+        }
+
+        $icaclsGrantArgs = if ($IsDirectory) { @("`"$Path`"", "/grant", "*$OwnerSid:F", "/T") } else { @("`"$Path`"", "/grant", "*$OwnerSid:F") }
+        $pinfo.Arguments = $icaclsGrantArgs -join " "
+        $proc = [System.Diagnostics.Process]::Start($pinfo)
+        $proc.WaitForExit()
+        $stdErr = $proc.StandardError.ReadToEnd()
+        if ($proc.ExitCode -ne 0) {
+            Write-Log "warning [ssh-acl] icacls grant failed for $Path (exit: $($proc.ExitCode)): $stdErr"
+        } else {
+            Write-Log "info [ssh-acl] icacls reset succeeded for $Path"
+        }
+    } catch {
+        Write-Log "warning [ssh-acl] icacls exception: $($_.Exception.Message)"
+    }
+}
+
+function Log-FileAcl {
+    param(
+        [string]$Path
+    )
+    if (Test-Path -LiteralPath $Path) {
+        try {
+            $pinfo = New-Object System.Diagnostics.ProcessStartInfo
+            $pinfo.FileName = "icacls.exe"
+            $pinfo.Arguments = "`"$Path`""
+            $pinfo.RedirectStandardOutput = $true
+            $pinfo.RedirectStandardError = $true
+            $pinfo.UseShellExecute = $false
+            $pinfo.CreateNoWindow = $true
+            $proc = [System.Diagnostics.Process]::Start($pinfo)
+            $proc.WaitForExit()
+            $stdOut = $proc.StandardOutput.ReadToEnd()
+            Write-Log "info [ssh-acl-diag] ACL of $Path:`r`n$stdOut"
+        } catch {
+            Write-Log "warning [ssh-acl-diag] failed to dump ACL for $Path"
         }
     }
 }
@@ -1123,7 +1233,9 @@ function Ensure-AuthorizedKey {
         }
 
         $adminKeys = $adminKey -split '\r?\n'
+        $userSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 
+        # 1. 写入普通用户 .ssh/authorized_keys
         $sshDir = Join-Path $env:USERPROFILE ".ssh"
         $authPath = Join-Path $sshDir "authorized_keys"
         New-Item -ItemType Directory -Force -Path $sshDir | Out-Null
@@ -1131,16 +1243,9 @@ function Ensure-AuthorizedKey {
             New-Item -ItemType File -Force -Path $authPath | Out-Null
         }
 
-        # 写入前：临时重置所有者与完全控制以解决死锁
-        try {
-            $userSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-            & icacls.exe $sshDir /setowner "*$userSid" | Out-Null
-            & icacls.exe $sshDir /grant "*$userSid:F" | Out-Null
-            & icacls.exe $authPath /setowner "*$userSid" | Out-Null
-            & icacls.exe $authPath /grant "*$userSid:F" | Out-Null
-        } catch {}
+        Reset-FilePermissions -Path $sshDir -OwnerSid $userSid -IsDirectory $true
+        Reset-FilePermissions -Path $authPath -OwnerSid $userSid -IsDirectory $false
 
-        # 清洗已有文件的 BOM 编码污染
         if (Test-Path -LiteralPath $authPath) {
             try {
                 $rawText = [System.IO.File]::ReadAllText($authPath)
@@ -1149,25 +1254,34 @@ function Ensure-AuthorizedKey {
         }
 
         $content = Get-Content -LiteralPath $authPath -ErrorAction SilentlyContinue
+        $userWriteSuccess = $true
         foreach ($key in $adminKeys) {
             if (-not [string]::IsNullOrEmpty($key.Trim()) -and $content -notcontains $key) {
-                Safe-Append-Key -Path $authPath -Key $key
+                $success = Safe-Append-Key -Path $authPath -Key $key
+                if (-not $success) {
+                    $userWriteSuccess = $false
+                }
             }
         }
 
-        # 普通用户 .ssh 目录与 authorized_keys 严格权限控制
-        try {
-            $userSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-            & icacls.exe $sshDir /inheritance:r | Out-Null
-            & icacls.exe $sshDir /grant "*$userSid:F" "*S-1-5-18:F" | Out-Null
+        Log-FileAcl -Path $authPath
 
-            & icacls.exe $authPath /inheritance:r | Out-Null
-            & icacls.exe $authPath /grant "*$userSid:F" "*S-1-5-18:F" | Out-Null
-            Write-Log "info [ssh] successfully updated ACL permissions using user SID for .ssh directory and authorized_keys"
-        } catch {
-            Write-Log "warning [ssh] failed to update ACL permissions: $($_.Exception.Message)"
+        if ($userWriteSuccess) {
+            try {
+                & icacls.exe "`"$sshDir`"" /inheritance:r | Out-Null
+                & icacls.exe "`"$sshDir`"" /grant "*$userSid:F" "*S-1-5-18:F" | Out-Null
+
+                & icacls.exe "`"$authPath`"" /inheritance:r | Out-Null
+                & icacls.exe "`"$authPath`"" /grant "*$userSid:F" "*S-1-5-18:F" | Out-Null
+                Write-Log "info [ssh] successfully updated ACL permissions using user SID for .ssh directory and authorized_keys"
+            } catch {
+                Write-Log "warning [ssh] failed to tighten ACL: $($_.Exception.Message)"
+            }
+        } else {
+            Write-Log "warning [ssh] failed to write to user authorized_keys ($authPath). We will continue and rely on administrators_authorized_keys."
         }
 
+        # 2. 写入管理员组 administrators_authorized_keys
         if (-not $script:DryRun) {
             $adminSshDir = Join-Path $env:ProgramData "ssh"
             New-Item -ItemType Directory -Force -Path $adminSshDir | Out-Null
@@ -1176,13 +1290,8 @@ function Ensure-AuthorizedKey {
                 New-Item -ItemType File -Force -Path $adminAuthPath | Out-Null
             }
 
-            # 写入前：临时重置所有者与完全控制以解决死锁
-            try {
-                & icacls.exe $adminAuthPath /setowner "*S-1-5-32-544" | Out-Null
-                & icacls.exe $adminAuthPath /grant "*S-1-5-32-544:F" | Out-Null
-            } catch {}
+            Reset-FilePermissions -Path $adminAuthPath -OwnerSid "S-1-5-32-544" -IsDirectory $false
 
-            # 清洗已有管理员授权文件的 BOM 编码污染
             if (Test-Path -LiteralPath $adminAuthPath) {
                 try {
                     $rawText = [System.IO.File]::ReadAllText($adminAuthPath)
@@ -1191,24 +1300,32 @@ function Ensure-AuthorizedKey {
             }
 
             $adminContent = Get-Content -LiteralPath $adminAuthPath -ErrorAction SilentlyContinue
+            $adminWriteSuccess = $true
             foreach ($key in $adminKeys) {
                 if (-not [string]::IsNullOrEmpty($key.Trim()) -and $adminContent -notcontains $key) {
-                    Safe-Append-Key -Path $adminAuthPath -Key $key
+                    $success = Safe-Append-Key -Path $adminAuthPath -Key $key
+                    if (-not $success) {
+                        $adminWriteSuccess = $false
+                    }
                 }
             }
 
-            # 管理员组 administrators_authorized_keys 严格权限与 Owner 设置
-            try {
-                $userSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-                & icacls.exe $adminAuthPath /setowner "*S-1-5-32-544" | Out-Null
-                & icacls.exe $adminAuthPath /inheritance:r | Out-Null
-                & icacls.exe $adminAuthPath /grant "*S-1-5-32-544:F" "*S-1-5-18:F" | Out-Null
-                & icacls.exe $adminAuthPath /remove "*$userSid" | Out-Null
-                & icacls.exe $adminAuthPath /remove "CREATOR OWNER" | Out-Null
-                & icacls.exe $adminAuthPath /remove "Everyone" | Out-Null
-                Write-Log "info [ssh] successfully updated ACL permissions using SIDs for administrators_authorized_keys"
-            } catch {
-                Write-Log "warning [ssh] failed to update ACL permissions using SIDs: $($_.Exception.Message)"
+            Log-FileAcl -Path $adminAuthPath
+
+            if ($adminWriteSuccess) {
+                try {
+                    & icacls.exe "`"$adminAuthPath`"" /setowner "*S-1-5-32-544" | Out-Null
+                    & icacls.exe "`"$adminAuthPath`"" /inheritance:r | Out-Null
+                    & icacls.exe "`"$adminAuthPath`"" /grant "*S-1-5-32-544:F" "*S-1-5-18:F" | Out-Null
+                    & icacls.exe "`"$adminAuthPath`"" /remove "*$userSid" | Out-Null
+                    & icacls.exe "`"$adminAuthPath`"" /remove "CREATOR OWNER" | Out-Null
+                    & icacls.exe "`"$adminAuthPath`"" /remove "Everyone" | Out-Null
+                    Write-Log "info [ssh] successfully updated ACL permissions using SIDs for administrators_authorized_keys"
+                } catch {
+                    Write-Log "warning [ssh] failed to tighten ACL for administrators_authorized_keys: $($_.Exception.Message)"
+                }
+            } else {
+                throw "无法将公钥写入管理员授权文件 ($adminAuthPath)。请检查系统是否阻止修改该文件或防病毒软件拦截。"
             }
         }
         Set-StepState -Id "write_authorized_keys" -State "success" -Message "管理员公钥已写入。"
