@@ -1140,21 +1140,20 @@ function Reset-FilePermissions {
         return
     }
 
-    # 1. 强行清除属性
+    # 1. 强行清除属性 (PowerShell 2.0 兼容)
     try {
-        $item = Get-Item -LiteralPath $Path
-        if ($item.Attributes -match "ReadOnly") {
-            $item.Attributes = "Normal"
-        }
+        Set-ItemProperty -LiteralPath $Path -Name IsReadOnly -Value $false -ErrorAction SilentlyContinue
     } catch {}
+
+    $quotedPath = '"' + $Path + '"'
 
     # 2. 强行夺取所有权
     try {
         $takeownArgs = @()
         if ($IsDirectory) {
-            $takeownArgs = @("/F", "`"$Path`"", "/R", "/D", "Y")
+            $takeownArgs = @("/F", $quotedPath, "/R", "/D", "Y")
         } else {
-            $takeownArgs = @("/F", "`"$Path`"", "/D", "Y")
+            $takeownArgs = @("/F", $quotedPath, "/D", "Y")
         }
         $pinfo = New-Object System.Diagnostics.ProcessStartInfo
         $pinfo.FileName = "takeown.exe"
@@ -1179,9 +1178,9 @@ function Reset-FilePermissions {
     try {
         $icaclsSetOwnerArgs = @()
         if ($IsDirectory) {
-            $icaclsSetOwnerArgs = @("`"$Path`"", "/setowner", "*$OwnerSid", "/T")
+            $icaclsSetOwnerArgs = @($quotedPath, "/setowner", "*$OwnerSid", "/T")
         } else {
-            $icaclsSetOwnerArgs = @("`"$Path`"", "/setowner", "*$OwnerSid")
+            $icaclsSetOwnerArgs = @($quotedPath, "/setowner", "*$OwnerSid")
         }
         $pinfo = New-Object System.Diagnostics.ProcessStartInfo
         $pinfo.FileName = "icacls.exe"
@@ -1199,9 +1198,9 @@ function Reset-FilePermissions {
 
         $icaclsGrantArgs = @()
         if ($IsDirectory) {
-            $icaclsGrantArgs = @("`"$Path`"", "/grant", "*$OwnerSid:F", "/T")
+            $icaclsGrantArgs = @($quotedPath, "/grant", "*$OwnerSid:F", "/T")
         } else {
-            $icaclsGrantArgs = @("`"$Path`"", "/grant", "*$OwnerSid:F")
+            $icaclsGrantArgs = @($quotedPath, "/grant", "*$OwnerSid:F")
         }
         $pinfo.Arguments = $icaclsGrantArgs -join " "
         $proc = [System.Diagnostics.Process]::Start($pinfo)
@@ -1225,7 +1224,7 @@ function Log-FileAcl {
         try {
             $pinfo = New-Object System.Diagnostics.ProcessStartInfo
             $pinfo.FileName = "icacls.exe"
-            $pinfo.Arguments = "`"$Path`""
+            $pinfo.Arguments = '"' + $Path + '"'
             $pinfo.RedirectStandardOutput = $true
             $pinfo.RedirectStandardError = $true
             $pinfo.UseShellExecute = $false
@@ -1283,11 +1282,11 @@ function Ensure-AuthorizedKey {
 
         if ($userWriteSuccess) {
             try {
-                & icacls.exe "`"$sshDir`"" /inheritance:r | Out-Null
-                & icacls.exe "`"$sshDir`"" /grant "*$userSid:F" "*S-1-5-18:F" | Out-Null
+                & icacls.exe $sshDir /inheritance:r | Out-Null
+                & icacls.exe $sshDir /grant "*$userSid:F" "*S-1-5-18:F" | Out-Null
 
-                & icacls.exe "`"$authPath`"" /inheritance:r | Out-Null
-                & icacls.exe "`"$authPath`"" /grant "*$userSid:F" "*S-1-5-18:F" | Out-Null
+                & icacls.exe $authPath /inheritance:r | Out-Null
+                & icacls.exe $authPath /grant "*$userSid:F" "*S-1-5-18:F" | Out-Null
                 Write-Log "info [ssh] successfully updated ACL permissions using user SID for .ssh directory and authorized_keys"
             } catch {
                 Write-Log "warning [ssh] failed to tighten ACL: $($_.Exception.Message)"
@@ -1329,12 +1328,12 @@ function Ensure-AuthorizedKey {
 
             if ($adminWriteSuccess) {
                 try {
-                    & icacls.exe "`"$adminAuthPath`"" /setowner "*S-1-5-32-544" | Out-Null
-                    & icacls.exe "`"$adminAuthPath`"" /inheritance:r | Out-Null
-                    & icacls.exe "`"$adminAuthPath`"" /grant "*S-1-5-32-544:F" "*S-1-5-18:F" | Out-Null
-                    & icacls.exe "`"$adminAuthPath`"" /remove "*$userSid" | Out-Null
-                    & icacls.exe "`"$adminAuthPath`"" /remove "CREATOR OWNER" | Out-Null
-                    & icacls.exe "`"$adminAuthPath`"" /remove "Everyone" | Out-Null
+                    & icacls.exe $adminAuthPath /setowner "*S-1-5-32-544" | Out-Null
+                    & icacls.exe $adminAuthPath /inheritance:r | Out-Null
+                    & icacls.exe $adminAuthPath /grant "*S-1-5-32-544:F" "*S-1-5-18:F" | Out-Null
+                    & icacls.exe $adminAuthPath /remove "*$userSid" | Out-Null
+                    & icacls.exe $adminAuthPath /remove "CREATOR OWNER" | Out-Null
+                    & icacls.exe $adminAuthPath /remove "Everyone" | Out-Null
                     Write-Log "info [ssh] successfully updated ACL permissions using SIDs for administrators_authorized_keys"
                 } catch {
                     Write-Log "warning [ssh] failed to tighten ACL for administrators_authorized_keys: $($_.Exception.Message)"
