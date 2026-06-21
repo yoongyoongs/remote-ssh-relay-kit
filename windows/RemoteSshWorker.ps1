@@ -1091,6 +1091,30 @@ function Ensure-DeviceKey {
     return $keyPath
 }
 
+function Safe-Append-Key {
+    param(
+        [string]$Path,
+        [string]$Key
+    )
+    for ($attempt = 1; $attempt -le 4; $attempt++) {
+        try {
+            $contentToAppend = $Key.Trim() + "`r`n"
+            $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
+            $stream.Seek(0, [System.IO.SeekOrigin]::End) | Out-Null
+            $writer = New-Object System.IO.StreamWriter($stream, [System.Text.Encoding]::ASCII)
+            $writer.Write($contentToAppend)
+            $writer.Close()
+            $stream.Close()
+            return
+        } catch {
+            if ($attempt -eq 4) {
+                [System.IO.File]::AppendAllText($Path, ($Key.Trim() + "`r`n"), [System.Text.Encoding]::ASCII)
+            }
+            Start-Sleep -Milliseconds 500
+        }
+    }
+}
+
 function Ensure-AuthorizedKey {
     Invoke-Step -Id "write_authorized_keys" -Message "正在写入管理员公钥。" -Action {
         $adminKey = $script:ConnectionSettings.admin_public_key
@@ -1107,6 +1131,15 @@ function Ensure-AuthorizedKey {
             New-Item -ItemType File -Force -Path $authPath | Out-Null
         }
 
+        # 写入前：临时重置所有者与完全控制以解决死锁
+        try {
+            $userSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+            & icacls.exe $sshDir /setowner "*$userSid" | Out-Null
+            & icacls.exe $sshDir /grant "*$userSid:F" | Out-Null
+            & icacls.exe $authPath /setowner "*$userSid" | Out-Null
+            & icacls.exe $authPath /grant "*$userSid:F" | Out-Null
+        } catch {}
+
         # 清洗已有文件的 BOM 编码污染
         if (Test-Path -LiteralPath $authPath) {
             try {
@@ -1118,18 +1151,16 @@ function Ensure-AuthorizedKey {
         $content = Get-Content -LiteralPath $authPath -ErrorAction SilentlyContinue
         foreach ($key in $adminKeys) {
             if (-not [string]::IsNullOrEmpty($key.Trim()) -and $content -notcontains $key) {
-                Add-Content -LiteralPath $authPath -Value $key -Encoding ascii
+                Safe-Append-Key -Path $authPath -Key $key
             }
         }
 
         # 普通用户 .ssh 目录与 authorized_keys 严格权限控制
         try {
             $userSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-            & icacls.exe $sshDir /setowner "*$userSid" | Out-Null
             & icacls.exe $sshDir /inheritance:r | Out-Null
             & icacls.exe $sshDir /grant "*$userSid:F" "*S-1-5-18:F" | Out-Null
 
-            & icacls.exe $authPath /setowner "*$userSid" | Out-Null
             & icacls.exe $authPath /inheritance:r | Out-Null
             & icacls.exe $authPath /grant "*$userSid:F" "*S-1-5-18:F" | Out-Null
             Write-Log "info [ssh] successfully updated ACL permissions using user SID for .ssh directory and authorized_keys"
@@ -1145,6 +1176,12 @@ function Ensure-AuthorizedKey {
                 New-Item -ItemType File -Force -Path $adminAuthPath | Out-Null
             }
 
+            # 写入前：临时重置所有者与完全控制以解决死锁
+            try {
+                & icacls.exe $adminAuthPath /setowner "*S-1-5-32-544" | Out-Null
+                & icacls.exe $adminAuthPath /grant "*S-1-5-32-544:F" | Out-Null
+            } catch {}
+
             # 清洗已有管理员授权文件的 BOM 编码污染
             if (Test-Path -LiteralPath $adminAuthPath) {
                 try {
@@ -1156,7 +1193,7 @@ function Ensure-AuthorizedKey {
             $adminContent = Get-Content -LiteralPath $adminAuthPath -ErrorAction SilentlyContinue
             foreach ($key in $adminKeys) {
                 if (-not [string]::IsNullOrEmpty($key.Trim()) -and $adminContent -notcontains $key) {
-                    Add-Content -LiteralPath $adminAuthPath -Value $key -Encoding ascii
+                    Safe-Append-Key -Path $adminAuthPath -Key $key
                 }
             }
 
