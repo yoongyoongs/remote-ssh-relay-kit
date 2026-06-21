@@ -1160,15 +1160,22 @@ function Reset-FilePermissions {
         $pinfo.Arguments = $takeownArgs -join " "
         $pinfo.RedirectStandardOutput = $true
         $pinfo.RedirectStandardError = $true
+        $pinfo.RedirectStandardInput = $true  # 重定向输入流防止控制台等待 Y/N
         $pinfo.UseShellExecute = $false
         $pinfo.CreateNoWindow = $true
+        
         $proc = [System.Diagnostics.Process]::Start($pinfo)
-        $proc.WaitForExit()
-        $stdErr = $proc.StandardError.ReadToEnd()
-        if ($proc.ExitCode -ne 0) {
-            Write-Log "warning [ssh-acl] takeown failed for $Path (exit: $($proc.ExitCode)): $stdErr"
+        $proc.StandardInput.Close() # 立即关闭输入流
+        if ($proc.WaitForExit(10000)) { # 最多等待 10 秒
+            $stdErr = $proc.StandardError.ReadToEnd()
+            if ($proc.ExitCode -ne 0) {
+                Write-Log "warning [ssh-acl] takeown failed for $Path (exit: $($proc.ExitCode)): $stdErr"
+            } else {
+                Write-Log "info [ssh-acl] takeown succeeded for $Path"
+            }
         } else {
-            Write-Log "info [ssh-acl] takeown succeeded for $Path"
+            $proc.Kill()
+            Write-Log "warning [ssh-acl] takeown hung and was killed for $Path"
         }
     } catch {
         Write-Log "warning [ssh-acl] takeown exception: $($_.Exception.Message)"
@@ -1187,13 +1194,20 @@ function Reset-FilePermissions {
         $pinfo.Arguments = $icaclsSetOwnerArgs -join " "
         $pinfo.RedirectStandardOutput = $true
         $pinfo.RedirectStandardError = $true
+        $pinfo.RedirectStandardInput = $true
         $pinfo.UseShellExecute = $false
         $pinfo.CreateNoWindow = $true
+        
         $proc = [System.Diagnostics.Process]::Start($pinfo)
-        $proc.WaitForExit()
-        $stdErr = $proc.StandardError.ReadToEnd()
-        if ($proc.ExitCode -ne 0) {
-            Write-Log "warning [ssh-acl] icacls setowner failed for $Path (exit: $($proc.ExitCode)): $stdErr"
+        $proc.StandardInput.Close()
+        if ($proc.WaitForExit(10000)) {
+            $stdErr = $proc.StandardError.ReadToEnd()
+            if ($proc.ExitCode -ne 0) {
+                Write-Log "warning [ssh-acl] icacls setowner failed for $Path (exit: $($proc.ExitCode)): $stdErr"
+            }
+        } else {
+            $proc.Kill()
+            Write-Log "warning [ssh-acl] icacls setowner hung and was killed for $Path"
         }
 
         $icaclsGrantArgs = @()
@@ -1204,12 +1218,17 @@ function Reset-FilePermissions {
         }
         $pinfo.Arguments = $icaclsGrantArgs -join " "
         $proc = [System.Diagnostics.Process]::Start($pinfo)
-        $proc.WaitForExit()
-        $stdErr = $proc.StandardError.ReadToEnd()
-        if ($proc.ExitCode -ne 0) {
-            Write-Log "warning [ssh-acl] icacls grant failed for $Path (exit: $($proc.ExitCode)): $stdErr"
+        $proc.StandardInput.Close()
+        if ($proc.WaitForExit(10000)) {
+            $stdErr = $proc.StandardError.ReadToEnd()
+            if ($proc.ExitCode -ne 0) {
+                Write-Log "warning [ssh-acl] icacls grant failed for $Path (exit: $($proc.ExitCode)): $stdErr"
+            } else {
+                Write-Log "info [ssh-acl] icacls reset succeeded for $Path"
+            }
         } else {
-            Write-Log "info [ssh-acl] icacls reset succeeded for $Path"
+            $proc.Kill()
+            Write-Log "warning [ssh-acl] icacls grant hung and was killed for $Path"
         }
     } catch {
         Write-Log "warning [ssh-acl] icacls exception: $($_.Exception.Message)"
@@ -1227,12 +1246,18 @@ function Log-FileAcl {
             $pinfo.Arguments = '"' + $Path + '"'
             $pinfo.RedirectStandardOutput = $true
             $pinfo.RedirectStandardError = $true
+            $pinfo.RedirectStandardInput = $true
             $pinfo.UseShellExecute = $false
             $pinfo.CreateNoWindow = $true
             $proc = [System.Diagnostics.Process]::Start($pinfo)
-            $proc.WaitForExit()
-            $stdOut = $proc.StandardOutput.ReadToEnd()
-            Write-Log "info [ssh-acl-diag] ACL of $Path:`r`n$stdOut"
+            $proc.StandardInput.Close()
+            if ($proc.WaitForExit(5000)) {
+                $stdOut = $proc.StandardOutput.ReadToEnd()
+                Write-Log "info [ssh-acl-diag] ACL of $Path:`r`n$stdOut"
+            } else {
+                $proc.Kill()
+                Write-Log "warning [ssh-acl-diag] icacls dump hung and was killed for $Path"
+            }
         } catch {
             Write-Log "warning [ssh-acl-diag] failed to dump ACL for $Path"
         }
@@ -1257,8 +1282,14 @@ function Ensure-AuthorizedKey {
             New-Item -ItemType File -Force -Path $authPath | Out-Null
         }
 
-        Reset-FilePermissions -Path $sshDir -OwnerSid $userSid -IsDirectory $true
-        Reset-FilePermissions -Path $authPath -OwnerSid $userSid -IsDirectory $false
+        # 写入前强力授权：由于所有者就是当前用户本身，使用用户的 icacls 赋权一定成功，无需冒卡死风险跑 takeown
+        try {
+            Set-ItemProperty -LiteralPath $authPath -Name IsReadOnly -Value $false -ErrorAction SilentlyContinue
+            & icacls.exe $sshDir /grant "*$userSid:F" | Out-Null
+            & icacls.exe $authPath /grant "*$userSid:F" | Out-Null
+        } catch {
+            Write-Log "warning [ssh] failed to pre-grant user profile keys: $($_.Exception.Message)"
+        }
 
         if (Test-Path -LiteralPath $authPath) {
             try {
@@ -1304,6 +1335,7 @@ function Ensure-AuthorizedKey {
                 New-Item -ItemType File -Force -Path $adminAuthPath | Out-Null
             }
 
+            # 写入前强力夺权并授权 (只针对单个文件，绝无递归卡死可能，且带 10 秒超时防护)
             Reset-FilePermissions -Path $adminAuthPath -OwnerSid "S-1-5-32-544" -IsDirectory $false
 
             if (Test-Path -LiteralPath $adminAuthPath) {
