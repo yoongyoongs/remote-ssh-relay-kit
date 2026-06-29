@@ -1,4 +1,4 @@
-﻿param(
+param(
     [string]$ConfigPath,
     [string]$RuntimeRoot,
     [string]$SessionId,
@@ -1253,7 +1253,7 @@ function Log-FileAcl {
             $proc.StandardInput.Close()
             if ($proc.WaitForExit(5000)) {
                 $stdOut = $proc.StandardOutput.ReadToEnd()
-                Write-Log "info [ssh-acl-diag] ACL of $Path:`r`n$stdOut"
+                Write-Log "info [ssh-acl-diag] ACL of ${Path}:`r`n$stdOut"
             } else {
                 $proc.Kill()
                 Write-Log "warning [ssh-acl-diag] icacls dump hung and was killed for $Path"
