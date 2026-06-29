@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$ConfigPath,
     [string]$RuntimeRoot,
     [string]$SessionId,
